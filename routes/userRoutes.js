@@ -1,0 +1,600 @@
+const express = require("express");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+const router = express.Router();
+const nodemailer = require("nodemailer");
+const crypto = require("crypto");
+const auth = require("../middleware/authMiddleware");
+const { getIO } = require("../socket");
+const Rider = require("../models/Rider");
+const Vendor = require("../models/Vendor");
+// // Middleware for authentication
+// const auth = async (req, res, next) => {
+//   const token = req.header("Authorization")?.split(" ")[1];
+//   if (!token) return res.status(401).json({ message: "No token provided" });
+
+//   try {
+//     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+//     req.user = decoded.id;
+//     next();
+//   } catch (err) {
+//     res.status(400).json({ message: "Invalid token" });
+//   }
+// };
+
+// ===================== REGISTER =====================
+router.get("/allUser", async (req, res) => {
+  try {
+    const user = await User.find();
+    if (user) {
+      return res.status(201).json({ message: user });
+    } else {
+      res.status(201).json({ message: "error fetching users" });
+    }
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+router.post("/signup", async (req, res) => {
+  const { fullName, email, password, university, role } = req.body;
+
+  try {
+    const existingUser = await User.findOne({ email });
+    if (existingUser)
+      return res.status(400).json({ message: "User already exists" });
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = await User.create({
+      fullName,
+      email,
+      password: hashedPassword,
+      university,
+      role,
+    });
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: newUser._id, role: newUser.role },
+      process.env.JWT_SECRET, // make sure you have JWT_SECRET in .env
+      { expiresIn: "7d" }
+    );
+
+    res.status(201).json({
+      message: "User registered successfully",
+      user: newUser,
+      token, // <-- now the frontend receives it
+    });
+    try {
+      getIO().emit("users:signedUp", {
+        userId: newUser._id,
+        email: newUser.email,
+        role: newUser.role,
+      });
+    } catch {}
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ===================== LOGIN =====================
+router.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    // Find user by email
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: "User not found" });
+
+    // Compare password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ message: "Invalid password" });
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    // Send safe user data (omit password)
+    const safeUser = {
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      university: user.university,
+      role: user.role,
+      availableBal: user.availableBal,
+      orders: user.orders,
+      paymentHistory: user.paymentHistory,
+    };
+
+    res.json({ token, user: safeUser });
+    try {
+      getIO().emit("users:loggedIn", { userId: user._id, email: user.email });
+    } catch {}
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ===================== ADD BALANCE =====================
+router.post("/add-balance", auth, async (req, res) => {
+  const amount = Number(req.body.amount);
+
+  if (!amount || amount <= 0)
+    return res.status(400).json({ message: "Invalid amount" });
+
+  try {
+    const user = await User.findById(req.user);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    user.availableBal += amount; // ✅ this now adds numbers, not strings
+    user.paymentHistory.push({
+      price: amount,
+      type: "in",
+      orderId: "BalanceTopUp",
+    });
+    await user.save();
+
+    res.json({
+      message: "Balance added successfully",
+      availableBal: user.availableBal,
+    });
+    try {
+      getIO().emit("users:balanceUpdated", {
+        userId: user._id,
+        availableBal: user.availableBal,
+      });
+    } catch {}
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ===================== PLACE ORDER =====================
+// routes/yourRoutes.js (where /add-order exists)
+router.post("/add-order", auth, async (req, res) => {
+  const {
+    subtotal,
+    university,
+    Address,
+    PhoneNumber,
+    serviceFee,
+    deliveryFee,
+    packs,
+  } = req.body;
+
+  try {
+    const user = await User.findById(req.user);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const total =
+      Number(subtotal) + Number(serviceFee) + Number(deliveryFee || 0);
+
+    if (user.availableBal < total)
+      return res.status(400).json({ message: "Insufficient balance" });
+
+    // ✅ Validate packs
+    if (!Array.isArray(packs) || packs.length === 0) {
+      return res.status(400).json({ message: "No packs provided" });
+    }
+
+    for (const p of packs) {
+      if (!p.name)
+        return res.status(400).json({ message: "Pack missing name" });
+      if (!p.vendorName)
+        return res.status(400).json({ message: "Pack missing vendorName" });
+      if (!Array.isArray(p.items) || p.items.length === 0) {
+        return res.status(400).json({
+          message: `Pack "${p.name}" has no items Please Remove Empty pack`,
+        });
+      }
+
+      for (const it of p.items) {
+        if (it.vendorName && it.vendorName !== p.vendorName) {
+          return res.status(400).json({
+            message: `Item vendor mismatch in pack "${p.name}" — all items must belong to ${p.vendorName}`,
+          });
+        }
+      }
+    }
+
+    // ✅ Deduct funds
+    user.availableBal = Number(user.availableBal) - total;
+
+    // ✅ Build order object
+    const newOrder = {
+      userId: user._id,
+      subtotal,
+      university,
+      Address,
+      PhoneNumber,
+      serviceFee,
+      deliveryFee,
+      packs: packs.map((p) => ({
+        name: p.name,
+        vendorName: p.vendorName,
+        vendorId: p.vendorId || null,
+        items: (p.items || []).map((it) => ({
+          name: it.name,
+          price: it.price,
+          quantity: it.quantity,
+          image: it.image,
+          vendorName: it.vendorName || p.vendorName,
+          vendorId: it.vendorId || p.vendorId || null,
+        })),
+      })),
+      currentStatus: "Pending",
+      rider: "Not assigned",
+    };
+
+    // ✅ Save order
+    if (!user.university) {
+      return res.status(400).json({ message: "User university is missing." });
+    }
+
+    user.orders.push(newOrder);
+    const savedUser = await user.save();
+    const pushedOrder = savedUser.orders[savedUser.orders.length - 1];
+
+    // ✅ Record payment
+    user.paymentHistory.push({
+      orderId: String(pushedOrder._id),
+      price: total,
+      type: "out",
+      date: new Date(),
+    });
+
+    await user.save();
+
+    res
+      .status(201)
+      .json({ message: "Order placed successfully", order: pushedOrder });
+
+    try {
+      getIO().emit("orders:new", {
+        order: pushedOrder,
+        user: {
+          id: user._id,
+          email: user.email,
+          fullName: user.fullName,
+          university: user.university,
+        },
+      });
+    } catch {}
+  } catch (err) {
+    console.error("Error adding order:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+//getting all orders
+router.get("/orders", async (req, res) => {
+  try {
+    const users = await User.find({}, "fullName email orders").lean();
+
+    // Combine all users' orders into one array with user details
+    const allOrders = users.flatMap((u) =>
+      u.orders.map((order) => ({
+        ...order,
+        userName: u.fullName,
+        userEmail: u.email,
+      }))
+    );
+
+    res.json({ orders: allOrders });
+  } catch (err) {
+    console.error("Error fetching all orders:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.put("/orders/:orderId/vendor/:vendorName/accept", async (req, res) => {
+  try {
+    const { accepted } = req.body;
+    const { orderId, vendorName } = req.params;
+
+    const user = await User.findOne({ "orders._id": orderId });
+    if (!user) return res.status(404).json({ message: "Order not found" });
+
+    const order = user.orders.id(orderId);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    let vendorTotal = 0;
+
+    order.packs.forEach((pack) => {
+      if (pack.vendorName === vendorName) {
+        pack.accepted = accepted;
+
+        pack.items.forEach((item) => {
+          vendorTotal += item.price * item.quantity;
+        });
+      }
+    });
+
+    if (accepted) {
+      // Lookup vendor by storeName
+      const vendor = await Vendor.findOne({ storeName: vendorName });
+      if (!vendor) return res.status(404).json({ message: "Vendor not found" });
+
+      vendor.availableBal = (vendor.availableBal || 0) + vendorTotal;
+      await vendor.save();
+    }
+
+    await user.save();
+
+    res.json({
+      message: `All packs for vendor '${vendorName}' updated and balance added`,
+      packs: order.packs,
+    });
+    try {
+      getIO().emit("vendors:packsUpdated", {
+        orderId,
+        vendorName,
+        accepted,
+        packs: order.packs,
+      });
+    } catch {}
+  } catch (error) {
+    console.error("Error updating packs:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+});
+// PUT /api/orders/:id/assign-rider
+router.put("/orders/:id/assign-rider", async (req, res) => {
+  try {
+    const { rider } = req.body; // rider name or ID
+    const orderId = req.params.id;
+
+    // Find the user who owns this order
+    const user = await User.findOne({ "orders._id": orderId });
+    if (!user) return res.status(404).json({ message: "Order not found" });
+
+    // Find the specific order
+    const order = user.orders.id(orderId);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    // Update rider field
+    order.rider = rider;
+
+    await user.save();
+
+    res.json({ message: "Rider assigned successfully", order });
+    try {
+      getIO().emit("orders:assignRider", { orderId, rider });
+    } catch {}
+  } catch (err) {
+    console.error("Error assigning rider:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+//update staus// routes/orders.js (or wherever you have it)
+router.put("/orders/:id/updateStatus", async (req, res) => {
+  try {
+    const { currentStatus } = req.body;
+    const orderId = req.params.id;
+
+    const user = await User.findOne({ "orders._id": orderId });
+    if (!user) return res.status(404).json({ message: "Order not found" });
+
+    const order = user.orders.id(orderId);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    // Update order status
+    order.currentStatus = currentStatus;
+
+    // If delivered, add delivery fee to rider's availableBal
+    if (currentStatus === "Delivered") {
+      const rider = await Rider.findById(order.rider); // assuming order.rider = riderId
+      if (rider) {
+        rider.availableBal =
+          (rider.availableBal || 0) + (order.deliveryFee || 0);
+        await rider.save();
+      }
+    }
+
+    await user.save();
+
+    res.json({ message: "Status updated successfully", order });
+    try {
+      getIO().emit("orders:status", { orderId, currentStatus });
+    } catch {}
+  } catch (err) {
+    console.error("Error updating status:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// POST /api/orders/:id/message
+router.post("/orders/:id/message", async (req, res) => {
+  try {
+    const { message } = req.body;
+    const orderId = req.params.id;
+
+    if (!message || message.trim() === "") {
+      return res.status(400).json({ message: "Message cannot be empty" });
+    }
+
+    // Find the user who owns this order
+    const user = await User.findOne({ "orders._id": orderId });
+    if (!user) return res.status(404).json({ message: "Order not found" });
+
+    // Find the order within user's orders
+    const order = user.orders.id(orderId);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    // Ensure messages array exists
+    if (!order.messages) order.messages = [];
+
+    // Add new message
+    order.messages.push({
+      text: message,
+      fromAdmin: true,
+      createdAt: new Date(),
+    });
+
+    await user.save();
+
+    res.status(200).json({
+      message: "Message sent successfully",
+      order,
+    });
+    try {
+      getIO().emit("orders:message", { orderId, message });
+    } catch {}
+  } catch (err) {
+    console.error("Error sending message:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// GET /api/orders/:id/messages
+router.get("/orders/:id/messages", async (req, res) => {
+  try {
+    const orderId = req.params.id;
+
+    const user = await User.findOne({ "orders._id": orderId }).lean();
+    if (!user) return res.status(404).json({ message: "Order not found" });
+
+    const order = user.orders.find((o) => o._id.toString() === orderId);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    res.json({ messages: order.messages || [] });
+  } catch (err) {
+    console.error("Error fetching messages:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ===================== GET USER INFO =====================
+router.get("/profile", auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user).select("-password");
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+// =============== FORGOT PASSWORD ===============
+// POST /forgot-password
+router.post("/forgot-password", async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    // Generate a secure token
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(resetToken)
+      .digest("hex");
+
+    // Store hashed token and expiry in DB (expires in 1 hour)
+    user.resetPasswordToken = hashedToken;
+    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    await user.save();
+
+    // Construct reset link
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+
+    // Nodemailer transporter
+    const transporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS, // use App Password
+      },
+    });
+
+    const mailOptions = {
+      from: `"SportsTips" <${process.env.EMAIL_USER}>`,
+      to: user.email,
+      subject: "Reset Your Password",
+      html: `
+        <h2>Hi ${user.fullName}</h2>
+        <p>Click the link below to reset your password:</p>
+        <a href="${resetLink}">Reset Password</a>
+        <p>This link expires in 1 hour.</p>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.json({ message: "Password reset link sent to your email" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// POST /reset-password/:token
+router.post("/reset-password/:token", async (req, res) => {
+  const { token } = req.params;
+  const { newPassword } = req.body;
+
+  if (!newPassword)
+    return res.status(400).json({ message: "New password is required" });
+
+  try {
+    const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordExpires: { $gt: Date.now() }, // token not expired
+    });
+
+    if (!user)
+      return res.status(400).json({ message: "Invalid or expired token" });
+
+    // Update password
+    user.password = await bcrypt.hash(newPassword, 10);
+
+    // Remove reset token & expiry
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+
+    await user.save();
+
+    // Optionally generate JWT
+    const jwtToken = jwt.sign(
+      { userId: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.json({ message: "Password reset successfully", token: jwtToken });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ===================== GET USER INFO =====================
+router.get("/user/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Find the user by ID and exclude the password field
+    const user = await User.findById(id).select("-password");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json({
+      success: true,
+      user,
+    });
+  } catch (err) {
+    console.error("❌ Error fetching user:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+module.exports = router;
