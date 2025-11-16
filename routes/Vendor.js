@@ -11,14 +11,16 @@ const { getIO } = require("../socket");
 // Replace with your secret key (store in environment variable)
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
-// ✅ SIGN UP route
+// ✅ SIGN UP route (requires vendor image)
 router.post("/signup", async (req, res) => {
   try {
-    const { storeName, university, email, password } = req.body;
+    const { storeName, university, email, password, image } = req.body;
 
     // Check required fields
-    if (!storeName || !university || !email || !password) {
-      return res.status(400).json({ message: "All fields are required" });
+    if (!storeName || !university || !email || !password || !image) {
+      return res
+        .status(400)
+        .json({ message: "All fields are required (including image)" });
     }
 
     // Check if email already exists
@@ -30,12 +32,28 @@ router.post("/signup", async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Upload image to Cloudinary
+    const { cloudinary } = require("../config/cloudinary");
+    let uploaded;
+    try {
+      uploaded = await cloudinary.uploader.upload(image, {
+        folder: "mealsection/vendors",
+        transformation: [
+          { width: 512, height: 512, crop: "fill", gravity: "auto" },
+        ],
+      });
+    } catch (e) {
+      console.error("Cloudinary upload error:", e?.message || e);
+      return res.status(500).json({ message: "Failed to upload image" });
+    }
+
     // Create vendor
     const newVendor = new Vendor({
       storeName,
       university,
       email,
       password: hashedPassword,
+      image: uploaded.secure_url,
     });
 
     await newVendor.save();

@@ -5,6 +5,7 @@ const vendorSchema = new mongoose.Schema(
     university: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
+    image: { type: String, required: true },
     Active: { type: String, default: false },
     role: {
       type: String,

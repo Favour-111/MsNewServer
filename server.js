@@ -8,6 +8,7 @@ const universityRoutes = require("./routes/universityRoute");
 const RiderRoute = require("./routes/RiderRoute");
 const deliveryFeeRoutes = require("./routes/deliveryFeeRoutes");
 const managerRoutes = require("./routes/managerRoute");
+const promotionRoutes = require("./routes/promotionRoutes");
 const { initSocket } = require("./socket");
 dotenv.config();
 const app = express();
@@ -15,8 +16,9 @@ const app = express();
 connectDB();
 app.use(cors({ origin: "*" }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Increase body size limits to allow base64 image uploads
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 app.use("/api/users", require("./routes/userRoutes"));
 app.use("/api/vendors", vendorAuthRoutes);
@@ -24,6 +26,7 @@ app.use("/api/universities", universityRoutes);
 app.use("/api/riders", RiderRoute);
 app.use("/api/delivery", deliveryFeeRoutes);
 app.use("/api/managers", managerRoutes);
+app.use("/api/promotions", promotionRoutes);
 
 // Create HTTP server and initialize Socket.IO
 const server = http.createServer(app);
