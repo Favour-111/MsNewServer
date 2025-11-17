@@ -16,10 +16,6 @@ const deliveryFeeSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
-    serviceFee: {
-      type: Number,
-      required: true,
-    },
   },
   { timestamps: true }
 );

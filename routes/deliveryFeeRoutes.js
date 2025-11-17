@@ -5,8 +5,7 @@ const DeliveryFee = require("../models/DeliveryFee");
 // ✅ Add delivery fee
 router.post("/add", async (req, res) => {
   try {
-    const { vendorId, minimumDeliveryFee, maximumDeliveryFee, serviceFee } =
-      req.body;
+    const { vendorId, minimumDeliveryFee, maximumDeliveryFee } = req.body;
 
     // Prevent duplicates
     const existing = await DeliveryFee.findOne({ vendorId });
@@ -20,7 +19,6 @@ router.post("/add", async (req, res) => {
       vendorId,
       minimumDeliveryFee,
       maximumDeliveryFee,
-      serviceFee,
     });
     await fee.save();
 
@@ -61,10 +59,10 @@ router.get("/:vendorId", async (req, res) => {
 // ✅ Update delivery fee
 router.put("/:vendorId", async (req, res) => {
   try {
-    const { minimumDeliveryFee, maximumDeliveryFee, serviceFee } = req.body;
+    const { minimumDeliveryFee, maximumDeliveryFee } = req.body;
     const updated = await DeliveryFee.findOneAndUpdate(
       { vendorId: req.params.vendorId },
-      { minimumDeliveryFee, maximumDeliveryFee, serviceFee },
+      { minimumDeliveryFee, maximumDeliveryFee },
       { new: true }
     );
     if (!updated)
