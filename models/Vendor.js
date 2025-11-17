@@ -5,7 +5,7 @@ const vendorSchema = new mongoose.Schema(
     university: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
-    image: { type: String, required: true },
+    image: { type: String, required: false },
     Active: { type: String, default: false },
     role: {
       type: String,
@@ -13,6 +13,7 @@ const vendorSchema = new mongoose.Schema(
       default: "vendor",
     },
     availableBal: { type: Number, default: 0 },
+    fcmToken: { type: String }, // For push notifications
   },
   { timestamps: true }
 );

@@ -10,10 +10,12 @@ const deliveryFeeRoutes = require("./routes/deliveryFeeRoutes");
 const managerRoutes = require("./routes/managerRoute");
 const promotionRoutes = require("./routes/promotionRoutes");
 const { initSocket } = require("./socket");
+const { initializeFirebase } = require("./services/notificationService");
 dotenv.config();
 const app = express();
 
 connectDB();
+initializeFirebase();
 app.use(cors({ origin: "*" }));
 
 // Increase body size limits to allow base64 image uploads

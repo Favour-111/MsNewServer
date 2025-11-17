@@ -11,6 +11,7 @@ const riderSchema = new mongoose.Schema(
       default: "rider",
     },
     availableBal: { type: Number, default: 0 },
+    fcmToken: { type: String }, // For push notifications
   },
   { timestamps: true }
 );

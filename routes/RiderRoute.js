@@ -45,7 +45,7 @@ router.post("/signup", async (req, res) => {
 // ✅ LOGIN route
 // routes/auth.js
 router.post("/login", async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, fcmToken } = req.body;
   if (!email || !password)
     return res.status(400).json({ message: "Email and password required" });
 
@@ -54,6 +54,12 @@ router.post("/login", async (req, res) => {
 
   const isMatch = await bcrypt.compare(password, rider.password);
   if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
+
+  // Update FCM token if provided
+  if (fcmToken && fcmToken !== rider.fcmToken) {
+    rider.fcmToken = fcmToken;
+    await rider.save();
+  }
 
   const token = jwt.sign(
     { id: rider._id, email: rider.email, role: rider.role },

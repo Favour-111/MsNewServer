@@ -79,7 +79,7 @@ router.post("/signup", async (req, res) => {
 
 // ===================== LOGIN =====================
 router.post("/login", async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, fcmToken } = req.body;
 
   try {
     // Find user by email
@@ -89,6 +89,12 @@ router.post("/login", async (req, res) => {
     // Compare password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: "Invalid password" });
+
+    // Update FCM token if provided
+    if (fcmToken && fcmToken !== user.fcmToken) {
+      user.fcmToken = fcmToken;
+      await user.save();
+    }
 
     // Generate JWT token
     const token = jwt.sign(
@@ -263,6 +269,61 @@ router.post("/add-order", auth, async (req, res) => {
         },
       });
     } catch {}
+
+    // ✅ Send push notifications to vendors
+    try {
+      const {
+        notifyVendorNewOrder,
+      } = require("../services/notificationService");
+      const Vendor = require("../models/Vendor");
+
+      // Group items by vendor to send single notification per vendor
+      const vendorMap = new Map();
+
+      for (const pack of packs) {
+        if (pack.vendorId || pack.vendorName) {
+          const vendorKey = pack.vendorId || pack.vendorName;
+          if (!vendorMap.has(vendorKey)) {
+            vendorMap.set(vendorKey, {
+              vendorId: pack.vendorId,
+              vendorName: pack.vendorName,
+              itemCount: 0,
+              totalAmount: 0,
+            });
+          }
+          const vendorData = vendorMap.get(vendorKey);
+          vendorData.itemCount += pack.items.length;
+          vendorData.totalAmount += pack.items.reduce(
+            (sum, item) => sum + Number(item.price) * Number(item.quantity),
+            0
+          );
+        }
+      }
+
+      // Send notification to each vendor
+      for (const [key, data] of vendorMap) {
+        let vendor = null;
+
+        if (data.vendorId) {
+          vendor = await Vendor.findById(data.vendorId);
+        } else if (data.vendorName) {
+          vendor = await Vendor.findOne({ storeName: data.vendorName });
+        }
+
+        if (vendor && vendor.fcmToken) {
+          await notifyVendorNewOrder(vendor, {
+            orderId: pushedOrder._id.toString(),
+            itemCount: data.itemCount,
+            total: data.totalAmount,
+            userName: user.fullName,
+            address: Address,
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.error("Error sending vendor notifications:", notifErr);
+      // Don't fail the order if notification fails
+    }
   } catch (err) {
     console.error("Error adding order:", err);
     res.status(500).json({ message: err.message });
@@ -336,6 +397,33 @@ router.put("/orders/:orderId/vendor/:vendorName/accept", async (req, res) => {
         packs: order.packs,
       });
     } catch {}
+
+    // ✅ Send push notifications to all riders
+    try {
+      const {
+        notifyAllRidersOrderAccepted,
+        notifyAllRidersOrderRejected,
+      } = require("../services/notificationService");
+
+      if (accepted) {
+        // Notify all riders that order is ready for pickup
+        await notifyAllRidersOrderAccepted(order.university, {
+          orderId: orderId,
+          vendorName: vendorName,
+          address: order.Address,
+          total: vendorTotal,
+        });
+      } else {
+        // Notify all riders that order was rejected
+        await notifyAllRidersOrderRejected(order.university, {
+          orderId: orderId,
+          vendorName: vendorName,
+        });
+      }
+    } catch (notifErr) {
+      console.error("Error sending rider notifications:", notifErr);
+      // Don't fail the request if notification fails
+    }
   } catch (error) {
     console.error("Error updating packs:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -391,6 +479,25 @@ router.put("/orders/:id/updateStatus", async (req, res) => {
         rider.availableBal =
           (rider.availableBal || 0) + (order.deliveryFee || 0);
         await rider.save();
+      }
+    }
+
+    // If processing (rider picked up order), notify the user
+    if (currentStatus === "Processing") {
+      try {
+        const {
+          notifyUserOrderPickedUp,
+        } = require("../services/notificationService");
+        const rider = await Rider.findById(order.rider);
+        if (rider) {
+          await notifyUserOrderPickedUp(user, {
+            orderId: orderId,
+            riderName: rider.userName || "your rider",
+          });
+        }
+      } catch (notifErr) {
+        console.error("Error sending user notification:", notifErr);
+        // Don't fail the request if notification fails
       }
     }
 
