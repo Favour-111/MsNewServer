@@ -15,7 +15,7 @@ const productSchema = new mongoose.Schema(
       required: true,
     },
 
-    image: { type: String, required: true },
+    image: { type: String },
     available: { type: Boolean, default: true },
   },
   { timestamps: true }

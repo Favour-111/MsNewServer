@@ -138,7 +138,7 @@ router.post("/add", async (req, res) => {
   try {
     const { vendorId, title, price, category, image } = req.body;
 
-    if (!vendorId || !title || !price || !category || !image) {
+    if (!vendorId || !title || !price || !category) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
@@ -173,7 +173,7 @@ router.put("/edit/:id", async (req, res) => {
     const productId = req.params.id;
 
     // Basic validation
-    if (!vendorId || !title || !price || !category || !image) {
+    if (!vendorId || !title || !price || !category) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
