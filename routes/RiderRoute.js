@@ -8,10 +8,10 @@ const mongoose = require("mongoose");
 // ✅ SIGN UP route
 router.post("/signup", async (req, res) => {
   try {
-    const { userName, university, email, password } = req.body;
+    const { userName, university, email, phoneNumber, password } = req.body;
 
     // Check required fields
-    if (!userName || !university || !email || !password) {
+    if (!userName || !university || !email || !phoneNumber || !password) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
@@ -28,6 +28,7 @@ router.post("/signup", async (req, res) => {
       userName,
       university,
       email,
+      phoneNumber,
       password: hashedPassword,
     });
 

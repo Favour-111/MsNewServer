@@ -9,6 +9,7 @@ const RiderRoute = require("./routes/RiderRoute");
 const deliveryFeeRoutes = require("./routes/deliveryFeeRoutes");
 const managerRoutes = require("./routes/managerRoute");
 const promotionRoutes = require("./routes/promotionRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
 const { initSocket } = require("./socket");
 const { initializeFirebase } = require("./services/notificationService");
 dotenv.config();
@@ -29,6 +30,7 @@ app.use("/api/riders", RiderRoute);
 app.use("/api/delivery", deliveryFeeRoutes);
 app.use("/api/managers", managerRoutes);
 app.use("/api/promotions", promotionRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 // Create HTTP server and initialize Socket.IO
 const server = http.createServer(app);
