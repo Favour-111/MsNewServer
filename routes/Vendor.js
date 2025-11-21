@@ -384,8 +384,6 @@ router.delete("/withdrawals/:id", async (req, res) => {
   }
 });
 
-module.exports = router;
-
 // ===== Vendor Activation Management =====
 // Activate a vendor
 router.patch("/:id/activate", async (req, res) => {
@@ -449,3 +447,22 @@ router.patch("/:id/active", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
+// Delete a vendor
+router.delete("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const vendor = await Vendor.findByIdAndDelete(id);
+    if (!vendor) return res.status(404).json({ message: "Vendor not found" });
+
+    // Optionally delete all products associated with this vendor
+    await Product.deleteMany({ vendorId: id });
+
+    return res.json({ message: "Vendor deleted successfully", vendor });
+  } catch (err) {
+    console.error("Delete vendor error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+module.exports = router;

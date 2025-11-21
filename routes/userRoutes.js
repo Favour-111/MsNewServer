@@ -275,6 +275,7 @@ router.post("/add-order", auth, async (req, res) => {
       const {
         notifyVendorNewOrder,
       } = require("../services/notificationService");
+      const { sendVendorNewOrderEmail } = require("../services/emailService");
       const Vendor = require("../models/Vendor");
 
       // Group items by vendor to send single notification per vendor
@@ -300,7 +301,7 @@ router.post("/add-order", auth, async (req, res) => {
         }
       }
 
-      // Send notification to each vendor
+      // Send notification to each vendor (both FCM and Email)
       for (const [key, data] of vendorMap) {
         let vendor = null;
 
@@ -310,14 +311,22 @@ router.post("/add-order", auth, async (req, res) => {
           vendor = await Vendor.findOne({ storeName: data.vendorName });
         }
 
-        if (vendor && vendor.fcmToken) {
-          await notifyVendorNewOrder(vendor, {
+        if (vendor) {
+          const orderInfo = {
             orderId: pushedOrder._id.toString(),
             itemCount: data.itemCount,
             total: data.totalAmount,
             userName: user.fullName,
             address: Address,
-          });
+          };
+
+          // Send FCM notification (if token available)
+          if (vendor.fcmToken) {
+            await notifyVendorNewOrder(vendor, orderInfo);
+          }
+
+          // ✅ Send Email notification (more reliable, works on all devices)
+          await sendVendorNewOrderEmail(vendor, orderInfo);
         }
       }
     } catch (notifErr) {
@@ -351,10 +360,12 @@ router.get("/orders", async (req, res) => {
   }
 });
 
-router.put("/orders/:orderId/vendor/:vendorName/accept", async (req, res) => {
+router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
   try {
     const { accepted } = req.body;
-    const { orderId, vendorName } = req.params;
+    const { orderId, vendorId } = req.params;
+
+    console.log("📦 Accept/Reject Request:", { orderId, vendorId, accepted });
 
     const user = await User.findOne({ "orders._id": orderId });
     if (!user) return res.status(404).json({ message: "Order not found" });
@@ -363,10 +374,27 @@ router.put("/orders/:orderId/vendor/:vendorName/accept", async (req, res) => {
     if (!order) return res.status(404).json({ message: "Order not found" });
 
     let vendorTotal = 0;
+    let vendorName = "";
+    let packsUpdated = 0;
+
+    console.log(
+      "🔍 Checking packs:",
+      order.packs.map((p) => ({
+        vendorId: p.vendorId,
+        vendorName: p.vendorName,
+        accepted: p.accepted,
+      }))
+    );
 
     order.packs.forEach((pack) => {
-      if (pack.vendorName === vendorName) {
+      console.log(
+        `Comparing: pack.vendorId="${pack.vendorId}" === vendorId="${vendorId}"`,
+        pack.vendorId === vendorId
+      );
+      if (String(pack.vendorId) === String(vendorId)) {
         pack.accepted = accepted;
+        if (!vendorName) vendorName = pack.vendorName;
+        packsUpdated++;
 
         pack.items.forEach((item) => {
           vendorTotal += item.price * item.quantity;
@@ -374,9 +402,11 @@ router.put("/orders/:orderId/vendor/:vendorName/accept", async (req, res) => {
       }
     });
 
+    console.log(`✅ Updated ${packsUpdated} packs, total: ₦${vendorTotal}`);
+
     if (accepted) {
-      // Lookup vendor by storeName
-      const vendor = await Vendor.findOne({ storeName: vendorName });
+      // Lookup vendor by vendorId
+      const vendor = await Vendor.findById(vendorId);
       if (!vendor) return res.status(404).json({ message: "Vendor not found" });
 
       vendor.availableBal = (vendor.availableBal || 0) + vendorTotal;
@@ -386,12 +416,15 @@ router.put("/orders/:orderId/vendor/:vendorName/accept", async (req, res) => {
     await user.save();
 
     res.json({
-      message: `All packs for vendor '${vendorName}' updated and balance added`,
+      message: `All packs for vendor '${
+        vendorName || vendorId
+      }' updated and balance added`,
       packs: order.packs,
     });
     try {
       getIO().emit("vendors:packsUpdated", {
         orderId,
+        vendorId,
         vendorName,
         accepted,
         packs: order.packs,
@@ -424,6 +457,47 @@ router.put("/orders/:orderId/vendor/:vendorName/accept", async (req, res) => {
       console.error("Error sending rider notifications:", notifErr);
       // Don't fail the request if notification fails
     }
+
+    // ✅ Send email notifications to riders and customer when vendor accepts
+    try {
+      const {
+        sendRidersNewOrderAvailableEmail,
+        sendCustomerOrderUpdateEmail,
+      } = require("../services/emailService");
+
+      if (accepted) {
+        // Check if all packs are accepted (order is fully ready)
+        const allPacksAccepted = order.packs.every(
+          (pack) => pack.accepted === true
+        );
+
+        if (allPacksAccepted) {
+          // Notify all riders in the same university that order is ready
+          const ridersInUniversity = await Rider.find({
+            university: order.university,
+          });
+          if (ridersInUniversity && ridersInUniversity.length > 0) {
+            await sendRidersNewOrderAvailableEmail(ridersInUniversity, {
+              orderId: orderId,
+              vendorName: vendorName,
+              address: order.Address,
+              university: order.university,
+              deliveryFee: order.deliveryFee || 0,
+            });
+          }
+
+          // Notify customer that all vendors have accepted
+          await sendCustomerOrderUpdateEmail(user, {
+            orderId: orderId,
+            currentStatus: "ready",
+            riderAssigned: false,
+          });
+        }
+      }
+    } catch (emailErr) {
+      console.error("Error sending emails:", emailErr);
+      // Don't fail the request if email fails
+    }
   } catch (error) {
     console.error("Error updating packs:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -447,6 +521,22 @@ router.put("/orders/:id/assign-rider", async (req, res) => {
     order.rider = rider;
 
     await user.save();
+
+    // ✅ Send email notification to rider about assignment
+    try {
+      const { sendRiderAssignmentEmail } = require("../services/emailService");
+      const riderDoc = await Rider.findById(rider);
+      if (riderDoc && riderDoc.email) {
+        await sendRiderAssignmentEmail(riderDoc, {
+          orderId,
+          address: order.Address,
+          university: order.university,
+          deliveryFee: order.deliveryFee,
+        });
+      }
+    } catch (emailErr) {
+      console.error("Error sending rider email:", emailErr);
+    }
 
     res.json({ message: "Rider assigned successfully", order });
     try {
@@ -472,12 +562,12 @@ router.put("/orders/:id/updateStatus", async (req, res) => {
     // Update order status
     order.currentStatus = currentStatus;
 
-    // If delivered, add delivery fee to rider's availableBal
+    // If delivered, add 50% of delivery fee to rider's availableBal
     if (currentStatus === "Delivered") {
       const rider = await Rider.findById(order.rider); // assuming order.rider = riderId
       if (rider) {
-        rider.availableBal =
-          (rider.availableBal || 0) + (order.deliveryFee || 0);
+        const riderShare = (order.deliveryFee || 0) * 0.5; // 50% of delivery fee
+        rider.availableBal = (rider.availableBal || 0) + riderShare;
         await rider.save();
       }
     }
@@ -494,6 +584,19 @@ router.put("/orders/:id/updateStatus", async (req, res) => {
             orderId: orderId,
             riderName: rider.userName || "your rider",
           });
+
+          // ✅ Send email to customer that rider has picked up their order
+          const {
+            sendCustomerRiderPickedOrderEmail,
+          } = require("../services/emailService");
+          await sendCustomerRiderPickedOrderEmail(
+            user,
+            {
+              orderId: orderId,
+              address: order.Address,
+            },
+            rider.userName || "Your Rider"
+          );
         }
       } catch (notifErr) {
         console.error("Error sending user notification:", notifErr);
@@ -502,6 +605,20 @@ router.put("/orders/:id/updateStatus", async (req, res) => {
     }
 
     await user.save();
+
+    // ✅ Send email notification to customer about order status change
+    try {
+      const {
+        sendCustomerOrderUpdateEmail,
+      } = require("../services/emailService");
+      await sendCustomerOrderUpdateEmail(user, {
+        orderId,
+        currentStatus,
+        riderAssigned: order.rider && order.rider !== "Not assigned",
+      });
+    } catch (emailErr) {
+      console.error("Error sending customer email:", emailErr);
+    }
 
     res.json({ message: "Status updated successfully", order });
     try {
