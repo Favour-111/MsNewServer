@@ -579,6 +579,106 @@ async function sendWelcomeEmail(user) {
   }
 }
 
+/**
+ * Send email to customer when order is rejected and refunded
+ */
+async function sendCustomerOrderRejectedEmail(user, orderDetails) {
+  try {
+    const transporter = getTransporter();
+
+    const mailOptions = {
+      from: `"MealSection" <${process.env.EMAIL_USER}>`,
+      to: user.email,
+      subject: "❌ Order Declined - Refund Processed - MealSection",
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .status-card { background: white; padding: 25px; border-radius: 8px; margin: 20px 0; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+            .emoji { font-size: 64px; margin-bottom: 15px; }
+            .order-id { font-size: 18px; color: #666; margin-top: 15px; font-family: monospace; background: #f3f4f6; padding: 10px; border-radius: 8px; }
+            .refund-box { background: #d1fae5; border: 2px solid #10b981; border-radius: 8px; padding: 20px; margin: 20px 0; text-align: center; }
+            .refund-amount { font-size: 36px; color: #10b981; font-weight: bold; margin: 10px 0; }
+            .info-box { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 8px; margin: 20px 0; }
+            .btn { display: inline-block; background: linear-gradient(135deg, #9e0505 0%, #c91a1a 100%); color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; margin: 20px 0; font-weight: bold; }
+            .footer { text-align: center; color: #666; font-size: 12px; margin-top: 30px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1 style="margin: 0;">❌ Order Declined</h1>
+              <p style="margin: 10px 0 0 0;">We're sorry, your order couldn't be completed</p>
+            </div>
+            <div class="content">
+              <div class="status-card">
+                <div class="emoji">😔</div>
+                <h2 style="margin: 10px 0; color: #ef4444;">Order Could Not Be Processed</h2>
+                <p style="color: #666; margin: 10px 0;">Unfortunately, ${
+                  orderDetails.vendorName || "the vendor"
+                } was unable to accept your order at this time.</p>
+                <div class="order-id">Order #${orderDetails.orderId
+                  .slice(-8)
+                  .toUpperCase()}</div>
+              </div>
+
+              <div class="refund-box">
+                <div style="font-size: 20px; color: #059669; margin-bottom: 10px;">✅ Full Refund Processed</div>
+                <div class="refund-amount">₦${orderDetails.refundAmount.toLocaleString()}</div>
+                <p style="color: #059669; margin: 10px 0; font-weight: 600;">has been credited back to your wallet</p>
+              </div>
+
+              <div class="info-box">
+                <strong>💡 What happens next?</strong>
+                <ul style="margin: 10px 0; padding-left: 20px;">
+                  <li>Your full payment has been refunded instantly</li>
+                  <li>You can use your balance to order from other vendors</li>
+                  <li>The refund includes all fees (subtotal + service fee + delivery fee)</li>
+                </ul>
+              </div>
+
+              <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;">
+                <p style="margin: 0; color: #666;"><strong>We're sorry for the inconvenience!</strong></p>
+                <p style="margin: 10px 0; color: #666;">This can happen when vendors are busy or items are unavailable. Please try ordering again from another vendor.</p>
+              </div>
+              
+              <div style="text-align: center;">
+                <a href="${
+                  process.env.CLIENT_APP_URL || "https://mealsection.com"
+                }/vendors" class="btn">Browse Other Vendors</a>
+              </div>
+
+              <div class="footer">
+                <p>If you have any questions about this refund, please contact us.</p>
+                <p>Email: support@mealsection.com</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `,
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log(
+      `✅ Order rejection & refund email sent to ${user.email}:`,
+      info.messageId
+    );
+    return info;
+  } catch (error) {
+    console.error(
+      `❌ Failed to send rejection email to ${user.email}:`,
+      error.message
+    );
+    return null;
+  }
+}
+
 module.exports = {
   sendVendorNewOrderEmail,
   sendCustomerOrderUpdateEmail,
@@ -586,4 +686,5 @@ module.exports = {
   sendWelcomeEmail,
   sendRidersNewOrderAvailableEmail,
   sendCustomerRiderPickedOrderEmail,
+  sendCustomerOrderRejectedEmail,
 };

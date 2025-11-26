@@ -136,6 +136,9 @@ router.post("/add-balance", auth, async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
 
     user.availableBal += amount; // ✅ this now adds numbers, not strings
+    if (!Array.isArray(user.paymentHistory)) {
+      user.paymentHistory = [];
+    }
     user.paymentHistory.push({
       price: amount,
       type: "in",
@@ -169,6 +172,8 @@ router.post("/add-order", auth, async (req, res) => {
     serviceFee,
     deliveryFee,
     packs,
+    deliveryNote,
+    vendorNote,
   } = req.body;
 
   try {
@@ -218,10 +223,13 @@ router.post("/add-order", auth, async (req, res) => {
       PhoneNumber,
       serviceFee,
       deliveryFee,
+      deliveryNote,
+      vendorNote,
       packs: packs.map((p) => ({
         name: p.name,
         vendorName: p.vendorName,
         vendorId: p.vendorId || null,
+        packType: p.packType || null,
         items: (p.items || []).map((it) => ({
           name: it.name,
           price: it.price,
@@ -240,11 +248,17 @@ router.post("/add-order", auth, async (req, res) => {
       return res.status(400).json({ message: "User university is missing." });
     }
 
+    if (!Array.isArray(user.orders)) {
+      user.orders = [];
+    }
     user.orders.push(newOrder);
     const savedUser = await user.save();
     const pushedOrder = savedUser.orders[savedUser.orders.length - 1];
 
     // ✅ Record payment
+    if (!Array.isArray(user.paymentHistory)) {
+      user.paymentHistory = [];
+    }
     user.paymentHistory.push({
       orderId: String(pushedOrder._id),
       price: total,
@@ -399,6 +413,8 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
         pack.items.forEach((item) => {
           vendorTotal += item.price * item.quantity;
         });
+        // Add pack price to vendor's total
+        vendorTotal += Number(pack.packPrice) || 0;
       }
     });
 
@@ -411,6 +427,51 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
 
       vendor.availableBal = (vendor.availableBal || 0) + vendorTotal;
       await vendor.save();
+    } else {
+      // ✅ Refund user when order is rejected
+      // Check if ALL packs have been rejected (none accepted)
+      const allPacksRejected = order.packs.every(
+        (pack) => pack.accepted === false
+      );
+
+      if (allPacksRejected) {
+        // Refund full amount: subtotal + serviceFee + deliveryFee
+        const refundAmount =
+          Number(order.subtotal || 0) +
+          Number(order.serviceFee || 0) +
+          Number(order.deliveryFee || 0);
+
+        user.availableBal = Number(user.availableBal || 0) + refundAmount;
+
+        // Record refund in payment history
+        user.paymentHistory.push({
+          orderId: String(order._id),
+          price: refundAmount,
+          type: "in",
+          date: new Date(),
+        });
+
+        // ✅ Update order status to Cancelled
+        order.currentStatus = "Cancelled";
+
+        console.log(
+          `💰 Refunded ₦${refundAmount} to user ${user.fullName} (all packs rejected)`
+        );
+
+        // ✅ Send email to customer about order rejection and refund
+        try {
+          const {
+            sendCustomerOrderRejectedEmail,
+          } = require("../services/emailService");
+          await sendCustomerOrderRejectedEmail(user, {
+            orderId: orderId,
+            refundAmount: refundAmount,
+            vendorName: vendorName,
+          });
+        } catch (emailErr) {
+          console.error("Error sending rejection email:", emailErr);
+        }
+      }
     }
 
     await user.save();
@@ -429,6 +490,10 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
         accepted,
         packs: order.packs,
       });
+      // ✅ Also emit order status change if cancelled
+      if (order.currentStatus === "Cancelled") {
+        getIO().emit("orders:status", { orderId, currentStatus: "Cancelled" });
+      }
     } catch {}
 
     // ✅ Send push notifications to all riders
@@ -745,7 +810,7 @@ router.post("/forgot-password", async (req, res) => {
         <div style="background: #fff7f2; min-height: 100vh; padding: 0; margin: 0; font-family: 'Segoe UI', Arial, sans-serif;">
           <div style="max-width: 440px; margin: 56px auto 32px auto; background: #fff; border-radius: 24px; box-shadow: 0 6px 32px rgba(201,26,26,0.10); border: 1.5px solid #f3e5e5; padding: 44px 32px 36px 32px;">
             <div style="display: flex; flex-direction: column; justify-content: center; align-items: center;">
-              <img src="https://favour-111.github.io/MEalSection-ComongSoon-2.0/WhatsApp%20Image%202024-08-24%20at%2020.18.12_988ce6f9.jpg" alt="MealSection Logo" style="width: 150px; " />
+              <img src="https://github.com/Favour-111/my-asset/blob/main/images%20(2).jpeg?raw=true" alt="MealSection Logo" style="width: 150px; " />
               </div>
               <p style="text-align: center; color: #b71c1c; font-size: 13px; font-weight: 500; margin-bottom: 10px;">Food Delivery for Universities</p>
             <h2 style="font-size: 1.22rem;  font-weight: 700; margin-bottom: 12px; text-align: center;">Hi ${

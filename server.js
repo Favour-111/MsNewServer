@@ -31,6 +31,7 @@ app.use("/api/delivery", deliveryFeeRoutes);
 app.use("/api/managers", managerRoutes);
 app.use("/api/promotions", promotionRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/pack-prices", require("./routes/packPriceRoutes"));
 
 // Create HTTP server and initialize Socket.IO
 const server = http.createServer(app);

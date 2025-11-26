@@ -23,6 +23,7 @@ const orderSchema = new mongoose.Schema(
         name: { type: String, required: true },
         vendorName: { type: String },
         vendorId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        packType: { type: String, enum: ["small", "big", null], default: null },
         items: [
           {
             name: { type: String, required: true },
@@ -36,6 +37,8 @@ const orderSchema = new mongoose.Schema(
       },
     ],
 
+    deliveryNote: { type: String },
+    vendorNote: { type: String },
     // 💬 NEW FIELD
     messages: [
       {
@@ -68,14 +71,16 @@ const userSchema = new mongoose.Schema(
     },
     availableBal: { type: Number, default: 0 },
     orders: [orderSchema],
-    Points: { type: Number, default: 0 },
-    paymentHistory: [paymentHistorySchema],
-
-    resetPasswordToken: String,
-    resetPasswordExpires: Date,
-
-    // FCM token for push notifications
-    fcmToken: { type: String, default: null },
+    // 💬 NEW FIELDS
+    deliveryNote: { type: String },
+    vendorNote: { type: String },
+    messages: [
+      {
+        text: { type: String, required: true },
+        fromAdmin: { type: Boolean, default: true },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
   },
   { timestamps: true }
 );

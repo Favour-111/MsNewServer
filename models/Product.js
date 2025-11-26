@@ -17,6 +17,16 @@ const productSchema = new mongoose.Schema(
 
     image: { type: String },
     available: { type: Boolean, default: true },
+    packs: {
+      small: {
+        price: { type: Number },
+        available: { type: Boolean, default: true },
+      },
+      big: {
+        price: { type: Number },
+        available: { type: Boolean, default: true },
+      },
+    },
   },
   { timestamps: true }
 );
