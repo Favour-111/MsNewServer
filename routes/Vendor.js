@@ -173,7 +173,7 @@ router.put("/edit/:id", async (req, res) => {
     const productId = req.params.id;
 
     // Basic validation
-    if (!vendorId || !title || !price || !category) {
+    if (!vendorId || !title || !category) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
