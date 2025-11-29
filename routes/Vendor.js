@@ -204,10 +204,14 @@ router.put("/edit/:id", async (req, res) => {
 // ✅ Get all products (optional filter by vendor)
 router.get("/allProduct", async (req, res) => {
   try {
-    const products = await Product.find();
-    if (products) {
-      res.send(products);
+    const { vendorId } = req.query;
+    let products;
+    if (vendorId) {
+      products = await Product.find({ vendorId });
+    } else {
+      products = await Product.find();
     }
+    res.send(products);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error", error });

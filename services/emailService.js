@@ -263,7 +263,7 @@ async function sendRiderAssignmentEmail(rider, orderDetails) {
                 <p><strong>🚨 Get Started:</strong> View full delivery details and pickup location</p>
                 <a href="${
                   process.env.RIDER_APP_URL || "https://rider.mealsection.com"
-                }/orders" class="btn">View Delivery Details</a>
+                }/order" class="btn">View Delivery Details</a>
               </div>
 
               <div class="footer">
@@ -353,7 +353,7 @@ async function sendRidersNewOrderAvailableEmail(riders, orderDetails) {
                 <div style="text-align: center;">
                   <a href="${
                     process.env.RIDER_APP_URL || "https://rider.mealsection.com"
-                  }/orders" class="btn">View & Accept Order</a>
+                  }/order" class="btn">View & Accept Order</a>
                 </div>
 
                 <div class="footer">

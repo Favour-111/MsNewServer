@@ -198,14 +198,29 @@ router.post("/add-order", auth, async (req, res) => {
         return res.status(400).json({ message: "Pack missing vendorName" });
       if (!Array.isArray(p.items) || p.items.length === 0) {
         return res.status(400).json({
-          message: `Pack "${p.name}" has no items Please Remove Empty pack`,
+          message: `Pack \"${p.name}\" has no items Please Remove Empty pack`,
         });
       }
-
+      // Only enforce packType if pack contains protein or carbohydrate
+      const requiresPackType =
+        Array.isArray(p.items) &&
+        p.items.some(
+          (it) =>
+            it.category &&
+            ["protein", "carbohydrate"].includes(it.category.toLowerCase())
+        );
+      if (
+        requiresPackType &&
+        (!p.packType || (p.packType !== "small" && p.packType !== "big"))
+      ) {
+        return res.status(400).json({
+          message: `Pack \"${p.name}\" is missing a valid packType. Please select 'small' or 'big' for every pack containing protein or carbohydrate.`,
+        });
+      }
       for (const it of p.items) {
         if (it.vendorName && it.vendorName !== p.vendorName) {
           return res.status(400).json({
-            message: `Item vendor mismatch in pack "${p.name}" — all items must belong to ${p.vendorName}`,
+            message: `Item vendor mismatch in pack \"${p.name}\" — all items must belong to ${p.vendorName}`,
           });
         }
       }
@@ -387,6 +402,7 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
     const order = user.orders.id(orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
 
+    // Use order subtotal for vendor payout
     let vendorTotal = 0;
     let vendorName = "";
     let packsUpdated = 0;
@@ -401,23 +417,27 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
     );
 
     order.packs.forEach((pack) => {
+      const packVendorId =
+        typeof pack.vendorId === "object" && pack.vendorId.toString
+          ? pack.vendorId.toString()
+          : String(pack.vendorId);
+      const paramVendorId =
+        typeof vendorId === "object" && vendorId.toString
+          ? vendorId.toString()
+          : String(vendorId);
       console.log(
-        `Comparing: pack.vendorId="${pack.vendorId}" === vendorId="${vendorId}"`,
-        pack.vendorId === vendorId
+        `Comparing: pack.vendorId="${packVendorId}" === vendorId="${paramVendorId}"`,
+        packVendorId === paramVendorId
       );
-      if (String(pack.vendorId) === String(vendorId)) {
+      if (packVendorId === paramVendorId) {
         pack.accepted = accepted;
         if (!vendorName) vendorName = pack.vendorName;
         packsUpdated++;
-
-        pack.items.forEach((item) => {
-          vendorTotal += item.price * item.quantity;
-        });
-        // Add pack price to vendor's total
-        vendorTotal += Number(pack.packPrice) || 0;
       }
     });
 
+    // Only use order subtotal for vendor payout
+    vendorTotal = Number(order.subtotal) || 0;
     console.log(`✅ Updated ${packsUpdated} packs, total: ₦${vendorTotal}`);
 
     if (accepted) {
@@ -444,12 +464,14 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
         user.availableBal = Number(user.availableBal || 0) + refundAmount;
 
         // Record refund in payment history
-        user.paymentHistory.push({
-          orderId: String(order._id),
-          price: refundAmount,
-          type: "in",
-          date: new Date(),
-        });
+        if (user && Array.isArray(user.paymentHistory)) {
+          user.paymentHistory.push({
+            orderId: String(order._id),
+            price: refundAmount,
+            type: "in",
+            date: new Date(),
+          });
+        }
 
         // ✅ Update order status to Cancelled
         order.currentStatus = "Cancelled";
