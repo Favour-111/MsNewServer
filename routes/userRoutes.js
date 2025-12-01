@@ -820,7 +820,7 @@ router.post("/forgot-password", async (req, res) => {
       secure: true,
       auth: {
         user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS, // use App Password
+        pass: process.env.EMAIL_APP_PASSWORD, // use App Password
       },
     });
 
