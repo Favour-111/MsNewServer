@@ -124,18 +124,37 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// ===================== ADD BALANCE =====================
-router.post("/add-balance", auth, async (req, res) => {
-  const amount = Number(req.body.amount);
-
-  if (!amount || amount <= 0)
-    return res.status(400).json({ message: "Invalid amount" });
-
+// ===================== ADD BALANCE TO USER (SuperAdmin) =====================
+// ===================== DELETE USER (SuperAdmin) =====================
+// DELETE /delete-user/:id
+router.delete("/delete-user/:id", async (req, res) => {
   try {
-    const user = await User.findById(req.user);
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    user.availableBal += amount; // ✅ this now adds numbers, not strings
+    const user = await User.findByIdAndDelete(req.params.id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    res.json({ success: true, message: "User deleted successfully", user });
+    try {
+      getIO().emit("users:deleted", { userId: req.params.id });
+    } catch {}
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+// POST /add-balance { userId, amount }
+router.post("/add-balance", async (req, res) => {
+  const { userId, amount } = req.body;
+  if (!userId || typeof amount !== "number" || amount <= 0) {
+    return res
+      .status(400)
+      .json({ message: "userId and valid amount are required" });
+  }
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    user.availableBal = (user.availableBal || 0) + amount;
     if (!Array.isArray(user.paymentHistory)) {
       user.paymentHistory = [];
     }
@@ -143,13 +162,10 @@ router.post("/add-balance", auth, async (req, res) => {
       price: amount,
       type: "in",
       orderId: "BalanceTopUp",
+      date: new Date(),
     });
     await user.save();
-
-    res.json({
-      message: "Balance added successfully",
-      availableBal: user.availableBal,
-    });
+    res.json({ success: true, user });
     try {
       getIO().emit("users:balanceUpdated", {
         userId: user._id,
@@ -157,7 +173,8 @@ router.post("/add-balance", auth, async (req, res) => {
       });
     } catch {}
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("❌ Error adding balance:", err);
+    res.status(500).json({ message: "Server error" });
   }
 });
 
@@ -920,6 +937,26 @@ router.get("/user/:id", async (req, res) => {
     });
   } catch (err) {
     console.error("❌ Error fetching user:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+// ===================== ADD BALANCE TO USER =====================
+// POST /add-balance { userId, amount }
+router.post("/add-balance", async (req, res) => {
+  const { userId, amount } = req.body;
+  if (!userId || typeof amount !== "number") {
+    return res.status(400).json({ message: "userId and amount are required" });
+  }
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    user.availableBal = (user.availableBal || 0) + amount;
+    await user.save();
+    res.json({ success: true, user });
+  } catch (err) {
+    console.error("❌ Error adding balance:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
