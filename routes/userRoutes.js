@@ -143,28 +143,46 @@ router.delete("/delete-user/:id", async (req, res) => {
 });
 // POST /add-balance { userId, amount }
 router.post("/add-balance", async (req, res) => {
-  const { userId, amount } = req.body;
-  if (!userId || typeof amount !== "number" || amount <= 0) {
+  const { userId, amount, reference } = req.body;
+  if (!userId || typeof amount !== "number" || amount <= 0 || !reference) {
     return res
       .status(400)
-      .json({ message: "userId and valid amount are required" });
+      .json({
+        message: "userId, valid amount, and payment reference are required",
+      });
   }
+  const { verifyPaystackPayment } = require("../services/paystackService");
   try {
-    const user = await User.findById(userId);
+    // Verify payment with Paystack
+    const paystackRes = await verifyPaystackPayment(reference);
+    if (
+      !paystackRes.status ||
+      paystackRes.data.status !== "success" ||
+      paystackRes.data.amount / 100 !== amount
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Payment verification failed or amount mismatch" });
+    }
+    // Atomic update
+    const user = await User.findByIdAndUpdate(
+      userId,
+      {
+        $inc: { availableBal: amount },
+        $push: {
+          paymentHistory: {
+            price: amount,
+            type: "in",
+            orderId: reference,
+            date: new Date(),
+          },
+        },
+      },
+      { new: true }
+    );
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
-    user.availableBal = (user.availableBal || 0) + amount;
-    if (!Array.isArray(user.paymentHistory)) {
-      user.paymentHistory = [];
-    }
-    user.paymentHistory.push({
-      price: amount,
-      type: "in",
-      orderId: "BalanceTopUp",
-      date: new Date(),
-    });
-    await user.save();
     res.json({ success: true, user });
     try {
       getIO().emit("users:balanceUpdated", {
@@ -173,8 +191,8 @@ router.post("/add-balance", async (req, res) => {
       });
     } catch {}
   } catch (err) {
-    console.error("❌ Error adding balance:", err);
-    res.status(500).json({ message: "Server error" });
+    console.error("❌ Error verifying payment or adding balance:", err);
+    res.status(500).json({ message: err.message || "Server error" });
   }
 });
 
