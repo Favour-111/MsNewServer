@@ -1,3 +1,6 @@
+// ===================== ADMIN ADD FUNDS TO USER =====================
+// POST /admin/add-funds { userId, amount }
+
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -76,7 +79,44 @@ router.post("/signup", async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-
+router.post("/admin/add-funds", async (req, res) => {
+  const { userId, amount } = req.body;
+  if (!userId || typeof amount !== "number" || amount <= 0) {
+    return res
+      .status(400)
+      .json({ message: "userId and valid amount are required" });
+  }
+  try {
+    const user = await User.findByIdAndUpdate(
+      userId,
+      {
+        $inc: { availableBal: amount },
+        $push: {
+          paymentHistory: {
+            price: amount,
+            type: "in",
+            orderId: "AdminFund",
+            date: new Date(),
+          },
+        },
+      },
+      { new: true }
+    );
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    res.json({ success: true, user });
+    try {
+      getIO().emit("users:balanceUpdated", {
+        userId: user._id,
+        availableBal: user.availableBal,
+      });
+    } catch {}
+  } catch (err) {
+    console.error("❌ Error adding admin funds:", err);
+    res.status(500).json({ message: err.message || "Server error" });
+  }
+});
 // ===================== LOGIN =====================
 router.post("/login", async (req, res) => {
   const { email, password, fcmToken } = req.body;
@@ -145,11 +185,9 @@ router.delete("/delete-user/:id", async (req, res) => {
 router.post("/add-balance", async (req, res) => {
   const { userId, amount, reference } = req.body;
   if (!userId || typeof amount !== "number" || amount <= 0 || !reference) {
-    return res
-      .status(400)
-      .json({
-        message: "userId, valid amount, and payment reference are required",
-      });
+    return res.status(400).json({
+      message: "userId, valid amount, and payment reference are required",
+    });
   }
   const { verifyPaystackPayment } = require("../services/paystackService");
   try {
