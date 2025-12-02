@@ -104,7 +104,8 @@ router.post("/login", async (req, res) => {
 // ✅ Get all managers
 router.get("/all", async (req, res) => {
   try {
-    const allManagers = await Manager.find();
+    // Use .lean() for faster query and only select needed fields
+    const allManagers = await Manager.find().lean();
     if (allManagers) {
       res.send(allManagers);
     } else {

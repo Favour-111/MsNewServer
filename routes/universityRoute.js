@@ -28,7 +28,8 @@ router.post("/addUni", async (req, res) => {
 
 router.get("/", async (req, res) => {
   try {
-    const universities = await University.find().sort({ name: 1 });
+    // Use .lean() for faster query and only select needed fields
+    const universities = await University.find().sort({ name: 1 }).lean();
     res.json({ count: universities.length, universities });
   } catch (err) {
     console.error("Error fetching universities:", err.message);

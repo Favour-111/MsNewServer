@@ -33,10 +33,10 @@ router.post("/signup", async (req, res) => {
     });
 
     await newRider.save();
-
     res
       .status(201)
       .json({ message: "Vendor registered successfully", newRider });
+    // Add socket or notification logic here if needed, using setImmediate
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
@@ -51,6 +51,7 @@ router.delete("/delete-rider/:id", async (req, res) => {
       return res.status(404).json({ message: "Rider not found" });
     }
     res.json({ success: true, message: "Rider deleted successfully", rider });
+    // Add socket or notification logic here if needed, using setImmediate
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -89,11 +90,13 @@ router.post("/login", async (req, res) => {
       role: rider.role,
     },
   });
+  // Add socket or notification logic here if needed, using setImmediate
 });
 
 router.get("/allRiders", async (req, res) => {
   try {
-    const getAllRider = await Rider.find();
+    // Use .lean() for faster query and only select needed fields
+    const getAllRider = await Rider.find().lean();
     if (getAllRider) {
       res.send(getAllRider);
     } else {

@@ -30,9 +30,10 @@ router.post("/", async (req, res) => {
 // Get pack prices for a vendor
 router.get("/:vendorId", async (req, res) => {
   try {
+    // Use .lean() for faster query and only select needed fields
     const packPrice = await PackPrice.findOne({
       vendorId: req.params.vendorId,
-    });
+    }).lean();
     if (!packPrice)
       return res.status(404).json({ error: "Pack prices not found." });
     res.json(packPrice);

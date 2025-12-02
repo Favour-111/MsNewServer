@@ -9,14 +9,13 @@ router.get("/", async (req, res) => {
   try {
     const { university, status } = req.query;
     let filter = {};
-
     if (university) filter.university = university;
     if (status) filter.status = status;
-
+    // Use .lean() for faster query
     const promotions = await Promotion.find(filter)
       .populate("vendorId", "storeName email Active")
-      .sort({ createdAt: -1 });
-
+      .sort({ createdAt: -1 })
+      .lean();
     res.status(200).json({ promotions });
   } catch (error) {
     console.error("Error fetching promotions:", error);
@@ -101,11 +100,11 @@ router.post("/", async (req, res) => {
       message: "Promotion created successfully",
       promotion: populatedPromotion,
     });
-
-    // Emit socket event
-    try {
-      getIO().emit("promotions:new", { promotion: populatedPromotion });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("promotions:new", { promotion: populatedPromotion });
+      } catch {}
+    });
   } catch (error) {
     console.error("Error creating promotion:", error);
     res.status(500).json({ message: "Server error", error });
@@ -153,11 +152,11 @@ router.put("/:id", async (req, res) => {
       message: "Promotion updated successfully",
       promotion: updatedPromotion,
     });
-
-    // Emit socket event
-    try {
-      getIO().emit("promotions:updated", { promotion: updatedPromotion });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("promotions:updated", { promotion: updatedPromotion });
+      } catch {}
+    });
   } catch (error) {
     console.error("Error updating promotion:", error);
     res.status(500).json({ message: "Server error", error });
@@ -189,14 +188,14 @@ router.patch("/:id/status", async (req, res) => {
       message: "Promotion status updated successfully",
       promotion: updatedPromotion,
     });
-
-    // Emit socket event
-    try {
-      getIO().emit("promotions:status-changed", {
-        promotionId: updatedPromotion._id,
-        status: updatedPromotion.status,
-      });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("promotions:status-changed", {
+          promotionId: updatedPromotion._id,
+          status: updatedPromotion.status,
+        });
+      } catch {}
+    });
   } catch (error) {
     console.error("Error updating promotion status:", error);
     res.status(500).json({ message: "Server error", error });
@@ -224,14 +223,14 @@ router.patch("/:id/featured", async (req, res) => {
       message: "Featured status toggled successfully",
       promotion: populatedPromotion,
     });
-
-    // Emit socket event
-    try {
-      getIO().emit("promotions:featured-toggled", {
-        promotionId: populatedPromotion._id,
-        featured: populatedPromotion.featured,
-      });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("promotions:featured-toggled", {
+          promotionId: populatedPromotion._id,
+          featured: populatedPromotion.featured,
+        });
+      } catch {}
+    });
   } catch (error) {
     console.error("Error toggling featured status:", error);
     res.status(500).json({ message: "Server error", error });
@@ -251,11 +250,13 @@ router.delete("/:id", async (req, res) => {
       message: "Promotion deleted successfully",
       promotionId: deletedPromotion._id,
     });
-
-    // Emit socket event
-    try {
-      getIO().emit("promotions:deleted", { promotionId: deletedPromotion._id });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("promotions:deleted", {
+          promotionId: deletedPromotion._id,
+        });
+      } catch {}
+    });
   } catch (error) {
     console.error("Error deleting promotion:", error);
     res.status(500).json({ message: "Server error", error });

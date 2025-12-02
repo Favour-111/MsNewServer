@@ -32,10 +32,10 @@ router.post("/add", async (req, res) => {
 // ✅ Get all delivery fees
 router.get("/", async (req, res) => {
   try {
-    const fees = await DeliveryFee.find().populate(
-      "vendorId",
-      "storeName email university"
-    );
+    // Use .lean() for faster query and only select needed fields
+    const fees = await DeliveryFee.find()
+      .populate("vendorId", "storeName email university")
+      .lean();
     res.json(fees);
   } catch (error) {
     console.error("Error fetching delivery fees:", error);

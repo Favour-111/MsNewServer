@@ -29,9 +29,9 @@ const Vendor = require("../models/Vendor");
 // ===================== REGISTER =====================
 router.get("/allUser", async (req, res) => {
   try {
-    const user = await User.find();
-    if (user) {
-      return res.status(201).json({ message: user });
+    const users = await User.find().lean();
+    if (users) {
+      return res.status(201).json({ message: users });
     } else {
       res.status(201).json({ message: "error fetching users" });
     }
@@ -68,13 +68,15 @@ router.post("/signup", async (req, res) => {
       user: newUser,
       token, // <-- now the frontend receives it
     });
-    try {
-      getIO().emit("users:signedUp", {
-        userId: newUser._id,
-        email: newUser.email,
-        role: newUser.role,
-      });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("users:signedUp", {
+          userId: newUser._id,
+          email: newUser.email,
+          role: newUser.role,
+        });
+      } catch {}
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -106,12 +108,14 @@ router.post("/admin/add-funds", async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
     res.json({ success: true, user });
-    try {
-      getIO().emit("users:balanceUpdated", {
-        userId: user._id,
-        availableBal: user.availableBal,
-      });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("users:balanceUpdated", {
+          userId: user._id,
+          availableBal: user.availableBal,
+        });
+      } catch {}
+    });
   } catch (err) {
     console.error("❌ Error adding admin funds:", err);
     res.status(500).json({ message: err.message || "Server error" });
@@ -156,9 +160,11 @@ router.post("/login", async (req, res) => {
     };
 
     res.json({ token, user: safeUser });
-    try {
-      getIO().emit("users:loggedIn", { userId: user._id, email: user.email });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("users:loggedIn", { userId: user._id, email: user.email });
+      } catch {}
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -174,9 +180,11 @@ router.delete("/delete-user/:id", async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
     res.json({ success: true, message: "User deleted successfully", user });
-    try {
-      getIO().emit("users:deleted", { userId: req.params.id });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("users:deleted", { userId: req.params.id });
+      } catch {}
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -222,12 +230,14 @@ router.post("/add-balance", async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
     res.json({ success: true, user });
-    try {
-      getIO().emit("users:balanceUpdated", {
-        userId: user._id,
-        availableBal: user.availableBal,
-      });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("users:balanceUpdated", {
+          userId: user._id,
+          availableBal: user.availableBal,
+        });
+      } catch {}
+    });
   } catch (err) {
     console.error("❌ Error verifying payment or adding balance:", err);
     res.status(500).json({ message: err.message || "Server error" });
@@ -360,17 +370,19 @@ router.post("/add-order", auth, async (req, res) => {
       .status(201)
       .json({ message: "Order placed successfully", order: pushedOrder });
 
-    try {
-      getIO().emit("orders:new", {
-        order: pushedOrder,
-        user: {
-          id: user._id,
-          email: user.email,
-          fullName: user.fullName,
-          university: user.university,
-        },
-      });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("orders:new", {
+          order: pushedOrder,
+          user: {
+            id: user._id,
+            email: user.email,
+            fullName: user.fullName,
+            university: user.university,
+          },
+        });
+      } catch {}
+    });
 
     // ✅ Send push notifications to vendors
     try {
@@ -444,9 +456,9 @@ router.post("/add-order", auth, async (req, res) => {
 //getting all orders
 router.get("/orders", async (req, res) => {
   try {
+    // Use .lean() and only select needed fields for speed
     const users = await User.find({}, "fullName email orders").lean();
-
-    // Combine all users' orders into one array with user details
+    // Consider adding pagination for very large datasets
     const allOrders = users.flatMap((u) =>
       u.orders.map((order) => ({
         ...order,
@@ -454,7 +466,6 @@ router.get("/orders", async (req, res) => {
         userEmail: u.email,
       }))
     );
-
     res.json({ orders: allOrders });
   } catch (err) {
     console.error("Error fetching all orders:", err);
@@ -682,26 +693,33 @@ router.put("/orders/:id/assign-rider", async (req, res) => {
 
     await user.save();
 
-    // ✅ Send email notification to rider about assignment
-    try {
-      const { sendRiderAssignmentEmail } = require("../services/emailService");
-      const riderDoc = await Rider.findById(rider);
-      if (riderDoc && riderDoc.email) {
-        await sendRiderAssignmentEmail(riderDoc, {
-          orderId,
-          address: order.Address,
-          university: order.university,
-          deliveryFee: order.deliveryFee,
-        });
-      }
-    } catch (emailErr) {
-      console.error("Error sending rider email:", emailErr);
-    }
-
+    // Respond immediately after DB update
     res.json({ message: "Rider assigned successfully", order });
-    try {
-      getIO().emit("orders:assignRider", { orderId, rider });
-    } catch {}
+
+    // Run notifications asynchronously
+    setImmediate(async () => {
+      try {
+        const {
+          sendRiderAssignmentEmail,
+        } = require("../services/emailService");
+        const riderDoc = await Rider.findById(rider);
+        if (riderDoc && riderDoc.email) {
+          await sendRiderAssignmentEmail(riderDoc, {
+            orderId,
+            address: order.Address,
+            university: order.university,
+            deliveryFee: order.deliveryFee,
+          });
+        }
+      } catch (emailErr) {
+        console.error("Error sending rider email:", emailErr);
+      }
+      try {
+        getIO().emit("orders:assignRider", { orderId, rider });
+      } catch (socketErr) {
+        console.error("Error emitting assignRider socket event:", socketErr);
+      }
+    });
   } catch (err) {
     console.error("Error assigning rider:", err);
     res.status(500).json({ message: "Server error" });

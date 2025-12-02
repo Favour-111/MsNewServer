@@ -61,16 +61,15 @@ router.post("/signup", async (req, res) => {
     });
 
     await newVendor.save();
-
     res
       .status(201)
       .json({ message: "Vendor registered successfully", newVendor });
+    // Add socket or notification logic here if needed, using setImmediate
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
   }
 });
-
 // ✅ LOGIN route
 router.post("/login", async (req, res) => {
   try {
@@ -116,6 +115,7 @@ router.post("/login", async (req, res) => {
         role: vendor.role,
       },
     });
+    // Add socket or notification logic here if needed, using setImmediate
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
@@ -275,9 +275,11 @@ router.post("/add", async (req, res) => {
     });
 
     res.status(201).json({ message: "Product added successfully", newProduct });
-    try {
-      getIO().emit("products:new", { product: newProduct });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("products:new", { product: newProduct });
+      } catch {}
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error", error });
@@ -306,9 +308,11 @@ router.put("/edit/:id", async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    try {
-      getIO().emit("products:updated", { product: updatedProduct });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("products:updated", { product: updatedProduct });
+      } catch {}
+    });
     res.json({
       message: "Product updated successfully",
       updatedProduct,
@@ -357,9 +361,11 @@ router.delete("/delete/:id", async (req, res) => {
     if (!product) return res.status(404).json({ message: "Product not found" });
 
     res.status(200).json({ message: "Product deleted successfully" });
-    try {
-      getIO().emit("products:deleted", { productId: req.params.id });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("products:deleted", { productId: req.params.id });
+      } catch {}
+    });
   } catch (error) {
     res.status(500).json({ message: "Server error", error });
   }
@@ -377,12 +383,14 @@ router.put("/toggle/:id", async (req, res) => {
     res
       .status(200)
       .json({ message: "Availability updated", available: product.available });
-    try {
-      getIO().emit("products:toggled", {
-        productId: product._id,
-        available: product.available,
-      });
-    } catch {}
+    setImmediate(() => {
+      try {
+        getIO().emit("products:toggled", {
+          productId: product._id,
+          available: product.available,
+        });
+      } catch {}
+    });
   } catch (error) {
     res.status(500).json({ message: "Server error", error });
   }
@@ -517,7 +525,8 @@ router.patch("/:id/activate", async (req, res) => {
       { new: true }
     );
     if (!vendor) return res.status(404).json({ message: "Vendor not found" });
-    return res.json({ message: "Vendor activated", vendor });
+    res.json({ message: "Vendor activated", vendor });
+    // Add socket or notification logic here if needed, using setImmediate
   } catch (err) {
     console.error("Activate vendor error:", err);
     return res.status(500).json({ message: "Server error" });
@@ -534,7 +543,8 @@ router.patch("/:id/deactivate", async (req, res) => {
       { new: true }
     );
     if (!vendor) return res.status(404).json({ message: "Vendor not found" });
-    return res.json({ message: "Vendor deactivated", vendor });
+    res.json({ message: "Vendor deactivated", vendor });
+    // Add socket or notification logic here if needed, using setImmediate
   } catch (err) {
     console.error("Deactivate vendor error:", err);
     return res.status(500).json({ message: "Server error" });
@@ -560,10 +570,11 @@ router.patch("/:id/active", async (req, res) => {
       { new: true }
     );
     if (!vendor) return res.status(404).json({ message: "Vendor not found" });
-    return res.json({
+    res.json({
       message: `Vendor ${normalized === "true" ? "activated" : "deactivated"}`,
       vendor,
     });
+    // Add socket or notification logic here if needed, using setImmediate
   } catch (err) {
     console.error("Set active vendor error:", err);
     return res.status(500).json({ message: "Server error" });
@@ -580,7 +591,8 @@ router.delete("/:id", async (req, res) => {
     // Optionally delete all products associated with this vendor
     await Product.deleteMany({ vendorId: id });
 
-    return res.json({ message: "Vendor deleted successfully", vendor });
+    res.json({ message: "Vendor deleted successfully", vendor });
+    // Add socket or notification logic here if needed, using setImmediate
   } catch (err) {
     console.error("Delete vendor error:", err);
     return res.status(500).json({ message: "Server error" });
