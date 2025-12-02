@@ -44,6 +44,17 @@ router.post("/signup", async (req, res) => {
 });
 
 // ✅ LOGIN route
+router.delete("/delete-rider/:id", async (req, res) => {
+  try {
+    const rider = await Rider.findByIdAndDelete(req.params.id);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+    res.json({ success: true, message: "Rider deleted successfully", rider });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
 // routes/auth.js
 router.post("/login", async (req, res) => {
   const { email, password, fcmToken } = req.body;
