@@ -1,4 +1,5 @@
 // ===================== ADMIN ADD FUNDS TO USER =====================
+
 // POST /admin/add-funds { userId, amount }
 
 const express = require("express");
@@ -118,6 +119,48 @@ router.post("/admin/add-funds", async (req, res) => {
     });
   } catch (err) {
     console.error("❌ Error adding admin funds:", err);
+    res.status(500).json({ message: err.message || "Server error" });
+  }
+});
+// ===================== ADMIN REMOVE FUNDS FROM USER =====================
+// POST /admin/remove-funds { userId, amount }
+router.post("/admin/remove-funds", async (req, res) => {
+  const { userId, amount } = req.body;
+  if (!userId || typeof amount !== "number" || amount <= 0) {
+    return res
+      .status(400)
+      .json({ message: "userId and valid amount are required" });
+  }
+  try {
+    const user = await User.findByIdAndUpdate(
+      userId,
+      {
+        $inc: { availableBal: -amount },
+        $push: {
+          paymentHistory: {
+            price: amount,
+            type: "out",
+            orderId: "AdminRemove",
+            date: new Date(),
+          },
+        },
+      },
+      { new: true }
+    );
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    res.json({ success: true, user });
+    setImmediate(() => {
+      try {
+        getIO().emit("users:balanceUpdated", {
+          userId: user._id,
+          availableBal: user.availableBal,
+        });
+      } catch {}
+    });
+  } catch (err) {
+    console.error("❌ Error removing admin funds:", err);
     res.status(500).json({ message: err.message || "Server error" });
   }
 });
