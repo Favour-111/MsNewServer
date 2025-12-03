@@ -740,68 +740,76 @@ router.put("/orders/:id/updateStatus", async (req, res) => {
     // Update order status
     order.currentStatus = currentStatus;
 
-    // If delivered, add 50% of delivery fee to rider's availableBal
-    if (currentStatus === "Delivered") {
-      const rider = await Rider.findById(order.rider); // assuming order.rider = riderId
-      if (rider) {
-        const riderShare = (order.deliveryFee || 0) * 0.5; // 50% of delivery fee
-        rider.availableBal = (rider.availableBal || 0) + riderShare;
-        await rider.save();
-      }
-    }
-
-    // If processing (rider picked up order), notify the user
-    if (currentStatus === "Processing") {
-      try {
-        const {
-          notifyUserOrderPickedUp,
-        } = require("../services/notificationService");
-        const rider = await Rider.findById(order.rider);
-        if (rider) {
-          await notifyUserOrderPickedUp(user, {
-            orderId: orderId,
-            riderName: rider.userName || "your rider",
-          });
-
-          // ✅ Send email to customer that rider has picked up their order
-          const {
-            sendCustomerRiderPickedOrderEmail,
-          } = require("../services/emailService");
-          await sendCustomerRiderPickedOrderEmail(
-            user,
-            {
-              orderId: orderId,
-              address: order.Address,
-            },
-            rider.userName || "Your Rider"
-          );
-        }
-      } catch (notifErr) {
-        console.error("Error sending user notification:", notifErr);
-        // Don't fail the request if notification fails
-      }
-    }
-
     await user.save();
 
-    // ✅ Send email notification to customer about order status change
-    try {
-      const {
-        sendCustomerOrderUpdateEmail,
-      } = require("../services/emailService");
-      await sendCustomerOrderUpdateEmail(user, {
-        orderId,
-        currentStatus,
-        riderAssigned: order.rider && order.rider !== "Not assigned",
-      });
-    } catch (emailErr) {
-      console.error("Error sending customer email:", emailErr);
-    }
-
+    // Respond immediately after DB update
     res.json({ message: "Status updated successfully", order });
     try {
       getIO().emit("orders:status", { orderId, currentStatus });
     } catch {}
+
+    // Run notifications/emails asynchronously
+    setImmediate(async () => {
+      // If delivered, add 50% of delivery fee to rider's availableBal
+      if (currentStatus === "Delivered") {
+        try {
+          const rider = await Rider.findById(order.rider); // assuming order.rider = riderId
+          if (rider) {
+            const riderShare = (order.deliveryFee || 0) * 0.5; // 50% of delivery fee
+            rider.availableBal = (rider.availableBal || 0) + riderShare;
+            await rider.save();
+          }
+        } catch (err) {
+          console.error("Error updating rider balance:", err);
+        }
+      }
+
+      // If processing (rider picked up order), notify the user
+      if (currentStatus === "Processing") {
+        try {
+          const {
+            notifyUserOrderPickedUp,
+          } = require("../services/notificationService");
+          const rider = await Rider.findById(order.rider);
+          if (rider) {
+            await notifyUserOrderPickedUp(user, {
+              orderId: orderId,
+              riderName: rider.userName || "your rider",
+            });
+
+            // ✅ Send email to customer that rider has picked up their order
+            const {
+              sendCustomerRiderPickedOrderEmail,
+            } = require("../services/emailService");
+            await sendCustomerRiderPickedOrderEmail(
+              user,
+              {
+                orderId: orderId,
+                address: order.Address,
+              },
+              rider.userName || "Your Rider"
+            );
+          }
+        } catch (notifErr) {
+          console.error("Error sending user notification:", notifErr);
+          // Don't fail the request if notification fails
+        }
+      }
+
+      // ✅ Send email notification to customer about order status change
+      try {
+        const {
+          sendCustomerOrderUpdateEmail,
+        } = require("../services/emailService");
+        await sendCustomerOrderUpdateEmail(user, {
+          orderId,
+          currentStatus,
+          riderAssigned: order.rider && order.rider !== "Not assigned",
+        });
+      } catch (emailErr) {
+        console.error("Error sending customer email:", emailErr);
+      }
+    });
   } catch (err) {
     console.error("Error updating status:", err);
     res.status(500).json({ message: "Server error" });
