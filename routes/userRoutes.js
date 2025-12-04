@@ -266,17 +266,21 @@ router.post("/add-balance", async (req, res) => {
         .status(400)
         .json({ message: "Payment verification failed or amount mismatch" });
     }
-    // Atomic update
+    // Only credit net amount (excluding Paystack charge)
+    const charge = typeof req.body.charge === "number" ? req.body.charge : 0;
+    const netAmount = amount - charge;
     const user = await User.findByIdAndUpdate(
       userId,
       {
-        $inc: { availableBal: amount },
+        $inc: { availableBal: netAmount },
         $push: {
           paymentHistory: {
-            price: amount,
+            price: netAmount,
             type: "in",
             orderId: reference,
             date: new Date(),
+            paystackAmount: amount,
+            paystackCharge: charge,
           },
         },
       },
