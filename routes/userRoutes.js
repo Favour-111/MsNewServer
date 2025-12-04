@@ -241,14 +241,27 @@ router.post("/add-balance", async (req, res) => {
     });
   }
   const { verifyPaystackPayment } = require("../services/paystackService");
+  let paystackRes;
   try {
-    // Verify payment with Paystack
-    const paystackRes = await verifyPaystackPayment(reference);
+    // Try Paystack verification, retry once if reference not found
+    try {
+      paystackRes = await verifyPaystackPayment(reference);
+    } catch (err) {
+      if ((err.message || "").toLowerCase().includes("reference not found")) {
+        // Wait 1s and retry once
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        paystackRes = await verifyPaystackPayment(reference);
+      } else {
+        throw err;
+      }
+    }
     if (
       !paystackRes.status ||
       paystackRes.data.status !== "success" ||
       paystackRes.data.amount / 100 !== amount
     ) {
+      // Log for debugging
+      console.error("Paystack verification failed:", paystackRes);
       return res
         .status(400)
         .json({ message: "Payment verification failed or amount mismatch" });
@@ -282,7 +295,15 @@ router.post("/add-balance", async (req, res) => {
       } catch {}
     });
   } catch (err) {
+    // Always log error for debugging
     console.error("❌ Error verifying payment or adding balance:", err);
+    // If error is reference not found, return a generic message
+    if ((err.message || "").toLowerCase().includes("reference not found")) {
+      return res.status(400).json({
+        message:
+          "Payment reference not found. Please try again in a few seconds.",
+      });
+    }
     res.status(500).json({ message: err.message || "Server error" });
   }
 });
