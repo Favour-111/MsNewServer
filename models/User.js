@@ -81,14 +81,6 @@ const userSchema = new mongoose.Schema(
         createdAt: { type: Date, default: Date.now },
       },
     ],
-    // 💰 Track processed Paystack payment references to prevent duplicate credits
-    processedPaymentReferences: [
-      {
-        reference: { type: String, required: true, index: true },
-        amount: { type: Number, required: true },
-        processedAt: { type: Date, default: Date.now },
-      },
-    ],
   },
   { timestamps: true }
 );
