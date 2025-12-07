@@ -27,6 +27,12 @@ function initializeFirebase() {
 
 // Send notification to a single device
 async function sendNotificationToDevice(token, title, body, data = {}) {
+  // Skip if no token provided
+  if (!token || typeof token !== "string") {
+    console.log("⚠️  No FCM token provided - skipping notification");
+    return null;
+  }
+
   if (!firebaseInitialized) {
     console.log("Firebase not initialized, skipping notification");
     return null;

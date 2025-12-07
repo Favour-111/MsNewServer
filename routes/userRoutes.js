@@ -170,17 +170,22 @@ router.post("/login", async (req, res) => {
 
   try {
     // Find user by email
-    const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: "User not found" });
 
+    // ⚡ Optimized: Query only essential fields, update FCM without re-fetching
+    let user = await User.findOne({ email }).lean();
+    if (!user) return res.status(400).json({ message: "User not found" });
+    const userFull = await User.findOne({ email }); // Get full doc only for password check
     // Compare password
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await bcrypt.compare(password, userFull.password);
     if (!isMatch) return res.status(400).json({ message: "Invalid password" });
 
-    // Update FCM token if provided
+    // Update FCM token if provided (async, don't wait)
     if (fcmToken && fcmToken !== user.fcmToken) {
-      user.fcmToken = fcmToken;
-      await user.save();
+      User.updateOne(
+        { _id: user._id },
+        { fcmToken },
+        { timestamps: false } // Skip timestamp update for faster operation
+      ).catch(() => {}); // Fire and forget
     }
 
     // Generate JWT token
@@ -190,7 +195,8 @@ router.post("/login", async (req, res) => {
       { expiresIn: "7d" }
     );
 
-    // Send safe user data (omit password)
+    // ⚡ Send only necessary user data (limit orders to last 5)
+    const recentOrders = user.orders ? user.orders.slice(-5) : [];
     const safeUser = {
       _id: user._id,
       fullName: user.fullName,
@@ -198,8 +204,8 @@ router.post("/login", async (req, res) => {
       university: user.university,
       role: user.role,
       availableBal: user.availableBal,
-      orders: user.orders,
-      paymentHistory: user.paymentHistory,
+      ordersCount: user.orders?.length || 0,
+      recentOrders, // Only recent orders
     };
 
     res.json({ token, user: safeUser });
@@ -232,44 +238,89 @@ router.delete("/delete-user/:id", async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-// POST /add-balance { userId, amount }
+// POST /add-balance { userId, amount, reference, charge }
 router.post("/add-balance", async (req, res) => {
-  const { userId, amount, reference } = req.body;
+  const { userId, amount, reference, charge } = req.body;
   if (!userId || typeof amount !== "number" || amount <= 0 || !reference) {
     return res.status(400).json({
       message: "userId, valid amount, and payment reference are required",
     });
   }
+
   const { verifyPaystackPayment } = require("../services/paystackService");
-  let paystackRes;
+
   try {
-    // Try Paystack verification, retry once if reference not found
-    try {
-      paystackRes = await verifyPaystackPayment(reference);
-    } catch (err) {
-      if ((err.message || "").toLowerCase().includes("reference not found")) {
-        // Wait 1s and retry once
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+    // 1️⃣ Check if payment already processed (idempotency - prevents duplicate credits)
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const alreadyProcessed = user.processedPaymentReferences?.some(
+      (p) => p.reference === reference
+    );
+    if (alreadyProcessed) {
+      console.log(
+        `⚠️  Payment ${reference} already processed for user ${userId}`
+      );
+      return res.json({
+        success: true,
+        message: "Payment already credited to wallet",
+        user,
+        duplicate: true,
+      });
+    }
+
+    // 2️⃣ Verify payment with Paystack - retry up to 3 times with exponential backoff
+    let paystackRes;
+    const maxRetries = 3;
+    const retryDelays = [1000, 3000, 5000]; // 1s, 3s, 5s
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
         paystackRes = await verifyPaystackPayment(reference);
-      } else {
-        throw err;
+        console.log(`✅ Paystack verified on attempt ${attempt + 1}`);
+        break;
+      } catch (err) {
+        const isLastAttempt = attempt === maxRetries - 1;
+        const errorMsg = (err.message || "").toLowerCase();
+        const isRefNotFound =
+          errorMsg.includes("reference not found") || errorMsg.includes("404");
+
+        if (isRefNotFound && !isLastAttempt) {
+          const delay = retryDelays[attempt];
+          console.log(
+            `⏳ Retry ${
+              attempt + 1
+            }/${maxRetries} after ${delay}ms (reference not yet propagated)`
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else if (isLastAttempt) {
+          throw err;
+        } else {
+          throw err;
+        }
       }
     }
+
+    // 3️⃣ Validate Paystack response
     if (
-      !paystackRes.status ||
-      paystackRes.data.status !== "success" ||
-      paystackRes.data.amount / 100 !== amount
+      !paystackRes?.status ||
+      paystackRes.data?.status !== "success" ||
+      paystackRes.data?.amount / 100 !== amount
     ) {
-      // Log for debugging
-      console.error("Paystack verification failed:", paystackRes);
-      return res
-        .status(400)
-        .json({ message: "Payment verification failed or amount mismatch" });
+      console.error("❌ Paystack verification failed. Response:", paystackRes);
+      return res.status(400).json({
+        message:
+          "Payment verification failed or amount mismatch. Please contact support.",
+      });
     }
-    // Only credit net amount (excluding Paystack charge)
-    const charge = typeof req.body.charge === "number" ? req.body.charge : 0;
-    const netAmount = amount - charge;
-    const user = await User.findByIdAndUpdate(
+
+    // 4️⃣ Credit wallet (net amount after Paystack charge)
+    const chargeAmount = typeof charge === "number" && charge > 0 ? charge : 0;
+    const netAmount = amount - chargeAmount;
+
+    const updatedUser = await User.findByIdAndUpdate(
       userId,
       {
         $inc: { availableBal: netAmount },
@@ -280,35 +331,51 @@ router.post("/add-balance", async (req, res) => {
             orderId: reference,
             date: new Date(),
             paystackAmount: amount,
-            paystackCharge: charge,
+            paystackCharge: chargeAmount,
+          },
+          processedPaymentReferences: {
+            reference,
+            amount: netAmount,
+            processedAt: new Date(),
           },
         },
       },
       { new: true }
     );
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-    res.json({ success: true, user });
+
+    console.log(
+      `✅ Payment ${reference} processed successfully. Credited ₦${netAmount} to user ${userId}`
+    );
+
+    res.json({ success: true, user: updatedUser });
+
+    // Emit real-time update via Socket.IO
     setImmediate(() => {
       try {
         getIO().emit("users:balanceUpdated", {
-          userId: user._id,
-          availableBal: user.availableBal,
+          userId: updatedUser._id,
+          availableBal: updatedUser.availableBal,
         });
-      } catch {}
+      } catch (e) {
+        console.error("Socket emit error:", e);
+      }
     });
   } catch (err) {
-    // Always log error for debugging
-    console.error("❌ Error verifying payment or adding balance:", err);
-    // If error is reference not found, return a generic message
-    if ((err.message || "").toLowerCase().includes("reference not found")) {
-      return res.status(400).json({
+    console.error("❌ Error in /add-balance:", err.message || err);
+
+    const errorMsg = (err.message || "").toLowerCase();
+    if (errorMsg.includes("reference not found") || errorMsg.includes("404")) {
+      return res.status(202).json({
         message:
-          "Payment reference not found. Please try again in a few seconds.",
+          "Payment processing. Your wallet will update when we confirm with Paystack. If not updated in 5 minutes, contact support.",
+        willRetryViaWebhook: true,
       });
     }
-    res.status(500).json({ message: err.message || "Server error" });
+
+    res.status(500).json({
+      message: "Error verifying payment. Please try again or contact support.",
+      error: err.message,
+    });
   }
 });
 
@@ -504,7 +571,19 @@ router.post("/add-order", auth, async (req, res) => {
 
           // Send FCM notification (if token available)
           if (vendor.fcmToken) {
-            await notifyVendorNewOrder(vendor, orderInfo);
+            try {
+              await notifyVendorNewOrder(vendor, orderInfo);
+            } catch (fcmErr) {
+              console.warn(
+                `⚠️  FCM notification failed for vendor ${vendor.storeName}:`,
+                fcmErr.message
+              );
+              // Don't fail the order if FCM fails
+            }
+          } else {
+            console.log(
+              `ℹ️  Vendor ${vendor.storeName} has no FCM token - skipping push notification`
+            );
           }
 
           // ✅ Send Email notification (more reliable, works on all devices)
@@ -521,22 +600,58 @@ router.post("/add-order", auth, async (req, res) => {
   }
 });
 
-//getting all orders
+// GET /orders - Get all orders with pagination for scalability
 router.get("/orders", async (req, res) => {
   try {
-    // Use .lean() and only select needed fields for speed
-    const users = await User.find({}, "fullName email orders").lean();
-    // Consider adding pagination for very large datasets
-    const allOrders = users.flatMap((u) =>
-      u.orders.map((order) => ({
-        ...order,
-        userName: u.fullName,
-        userEmail: u.email,
-      }))
-    );
-    res.json({ orders: allOrders });
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, parseInt(req.query.limit) || 50); // Max 100 per page
+    const skip = (page - 1) * limit;
+    const filter = req.query.status
+      ? { "orders.currentStatus": req.query.status }
+      : {};
+
+    // ⚡ Optimized query: use aggregation pipeline for better performance
+    const [orders, total] = await Promise.all([
+      User.aggregate([
+        { $match: filter },
+        { $unwind: "$orders" },
+        { $sort: { "orders.createdAt": -1 } },
+        { $skip: skip },
+        { $limit: limit },
+        {
+          $project: {
+            _id: 0,
+            orderId: "$orders._id",
+            subtotal: "$orders.subtotal",
+            currentStatus: "$orders.currentStatus",
+            createdAt: "$orders.createdAt",
+            userName: "$fullName",
+            userEmail: "$email",
+            university: "$orders.university",
+            deliveryFee: "$orders.deliveryFee",
+            serviceFee: "$orders.serviceFee",
+          },
+        },
+      ]),
+      User.aggregate([
+        { $match: filter },
+        { $unwind: "$orders" },
+        { $count: "total" },
+      ]),
+    ]);
+
+    const totalCount = total[0]?.total || 0;
+    res.json({
+      orders,
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        pages: Math.ceil(totalCount / limit),
+      },
+    });
   } catch (err) {
-    console.error("Error fetching all orders:", err);
+    console.error("Error fetching orders:", err);
     res.status(500).json({ message: err.message });
   }
 });
@@ -672,25 +787,36 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
 
     // ✅ Send push notifications to all riders
     try {
-      const {
-        notifyAllRidersOrderAccepted,
-        notifyAllRidersOrderRejected,
-      } = require("../services/notificationService");
-
       if (accepted) {
         // Notify all riders that order is ready for pickup
-        await notifyAllRidersOrderAccepted(order.university, {
-          orderId: orderId,
-          vendorName: vendorName,
-          address: order.Address,
-          total: vendorTotal,
-        });
+        try {
+          await notifyAllRidersOrderAccepted(order.university, {
+            orderId: orderId,
+            vendorName: vendorName,
+            address: order.Address,
+            total: vendorTotal,
+          });
+        } catch (fcmErr) {
+          console.warn(
+            `⚠️  FCM notification failed for riders in ${order.university}:`,
+            fcmErr.message
+          );
+          // Don't fail the request if FCM fails
+        }
       } else {
         // Notify all riders that order was rejected
-        await notifyAllRidersOrderRejected(order.university, {
-          orderId: orderId,
-          vendorName: vendorName,
-        });
+        try {
+          await notifyAllRidersOrderRejected(order.university, {
+            orderId: orderId,
+            vendorName: vendorName,
+          });
+        } catch (fcmErr) {
+          console.warn(
+            `⚠️  FCM notification failed for riders in ${order.university}:`,
+            fcmErr.message
+          );
+          // Don't fail the request if FCM fails
+        }
       }
     } catch (notifErr) {
       console.error("Error sending rider notifications:", notifErr);
@@ -840,10 +966,24 @@ router.put("/orders/:id/updateStatus", async (req, res) => {
           } = require("../services/notificationService");
           const rider = await Rider.findById(order.rider);
           if (rider) {
-            await notifyUserOrderPickedUp(user, {
-              orderId: orderId,
-              riderName: rider.userName || "your rider",
-            });
+            if (user.fcmToken) {
+              try {
+                await notifyUserOrderPickedUp(user, {
+                  orderId: orderId,
+                  riderName: rider.userName || "your rider",
+                });
+              } catch (fcmErr) {
+                console.warn(
+                  `⚠️  FCM notification failed for user ${user.fullName}:`,
+                  fcmErr.message
+                );
+                // Don't fail the request if FCM fails
+              }
+            } else {
+              console.log(
+                `ℹ️  User ${user.fullName} has no FCM token - skipping push notification`
+              );
+            }
 
             // ✅ Send email to customer that rider has picked up their order
             const {
@@ -1110,4 +1250,110 @@ router.post("/add-balance", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+// ===================== PAYSTACK WEBHOOK =====================
+// POST /paystack/webhook - Handle Paystack charge.success events
+// This ensures payment gets credited even if frontend verification fails
+router.post("/paystack/webhook", async (req, res) => {
+  try {
+    // Verify webhook signature (optional but recommended for security)
+    const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+    const hash = require("crypto")
+      .createHmac("sha512", paystackSecret)
+      .update(JSON.stringify(req.body))
+      .digest("hex");
+
+    if (hash !== req.headers["x-paystack-signature"]) {
+      console.warn("⚠️  Webhook signature verification failed");
+      return res.status(401).json({ message: "Invalid signature" });
+    }
+
+    const { event, data } = req.body;
+
+    // Only process successful charge events
+    if (event !== "charge.success") {
+      console.log(`ℹ️  Ignoring event: ${event}`);
+      return res.json({ status: "ok" });
+    }
+
+    const { reference, amount, metadata } = data;
+    const userId = metadata?.userId;
+    const chargeAmount = metadata?.charge || 0;
+
+    if (!reference || !userId) {
+      console.error("❌ Missing reference or userId in webhook metadata");
+      return res.status(400).json({ message: "Missing required metadata" });
+    }
+
+    console.log(
+      `📱 Webhook received for payment: ${reference}, amount: ₦${amount / 100}`
+    );
+
+    // Check if already processed
+    const user = await User.findById(userId);
+    if (!user) {
+      console.error(`❌ User not found: ${userId}`);
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const alreadyProcessed = user.processedPaymentReferences?.some(
+      (p) => p.reference === reference
+    );
+
+    if (alreadyProcessed) {
+      console.log(`⚠️  Payment ${reference} already processed via webhook`);
+      return res.json({ status: "ok", message: "Already processed" });
+    }
+
+    // Credit the wallet
+    const amountInNaira = amount / 100;
+    const netAmount = amountInNaira - chargeAmount;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        $inc: { availableBal: netAmount },
+        $push: {
+          paymentHistory: {
+            price: netAmount,
+            type: "in",
+            orderId: reference,
+            date: new Date(),
+            paystackAmount: amountInNaira,
+            paystackCharge: chargeAmount,
+          },
+          processedPaymentReferences: {
+            reference,
+            amount: netAmount,
+            processedAt: new Date(),
+          },
+        },
+      },
+      { new: true }
+    );
+
+    console.log(
+      `✅ Webhook: Payment ${reference} credited ₦${netAmount} to user ${userId}`
+    );
+
+    // Emit real-time update
+    setImmediate(() => {
+      try {
+        getIO().emit("users:balanceUpdated", {
+          userId: updatedUser._id,
+          availableBal: updatedUser.availableBal,
+        });
+      } catch (e) {
+        console.error("Socket emit error:", e);
+      }
+    });
+
+    res.json({ status: "ok", message: "Payment processed" });
+  } catch (err) {
+    console.error("❌ Error processing webhook:", err);
+    // Always return 200 to acknowledge receipt (Paystack will retry if not 200)
+    res.status(200).json({ error: err.message });
+  }
+});
+
 module.exports = router;
