@@ -1020,12 +1020,22 @@ router.post("/forgot-password", async (req, res) => {
     user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
     await user.save();
 
-    // Construct reset link
-    const resetLink = `${process.env.API}/reset-password/${resetToken}`;
+    // Debug logging: confirm token and expiry are saved
+    const savedUser = await User.findOne({ email });
+    console.log("[FORGOT PASSWORD] Email:", email);
+    console.log("[FORGOT PASSWORD] Reset token (raw):", resetToken);
+    console.log("[FORGOT PASSWORD] Reset token (hashed):", hashedToken);
+    console.log("[FORGOT PASSWORD] Saved in DB:", {
+      resetPasswordToken: savedUser.resetPasswordToken,
+      resetPasswordExpires: savedUser.resetPasswordExpires,
+    });
 
-    // Use emailService to send the reset email via Brevo SMTP
-    const { sendEmail } = require("../services/emailService");
-    await sendEmail({
+    // Construct reset link
+    const resetLink = `${process.env.CLIENT_APP_URL}/reset-password/${resetToken}`;
+
+    // Use Brevo API to send the reset email
+    const { sendEmailViaBrevoApi } = require("../services/emailService");
+    await sendEmailViaBrevoApi({
       to: user.email,
       subject: "Reset Your MealSection Password",
       html: `
@@ -1044,7 +1054,7 @@ router.post("/forgot-password", async (req, res) => {
             </div>
             <p style="color: #888; font-size: 0.99rem; margin-top: 0; text-align: center;">This link will expire in 1 hour for your security.</p>
             <hr style="border: none; border-top: 1.5px solid #f3e5e5; margin: 28px 0 16px 0;" />
-            <p style="color: #b71c1c; font-size: 0.99rem; margin: 0; text-align: center;">Questions? <a href="mailto:support@mealsection.com" style="color: #c91a1a; text-decoration: underline;">support@mealsection.com</a></p>
+            <p style="color: #b71c1c; font-size: 0.99rem; margin: 0; text-align: center;">Questions? <a href="mailto:mealsection@gmail.com" style="color: #c91a1a; text-decoration: underline;">mealsection@gmail.com</a></p>
             <a href="https://favour-111.github.io/my-portfolio/" target="_blank" rel="noopener" style="color: #bbb; font-size: 0.89rem; margin-top: 16px; text-align: center; text-decoration: underline;">&copy; ${new Date().getFullYear()} Horbah's Tech. All rights reserved.</a>
           </div>
         </div>

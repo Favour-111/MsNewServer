@@ -75,6 +75,9 @@ const userSchema = new mongoose.Schema(
     availableBal: { type: Number, default: 0 },
     orders: [{ type: mongoose.Schema.Types.ObjectId, ref: "Order" }],
     paymentHistory: [paymentHistorySchema],
+    // Password reset fields
+    resetPasswordToken: { type: String },
+    resetPasswordExpires: { type: Date },
     // 💬 NEW FIELDS
     deliveryNote: { type: String },
     vendorNote: { type: String },

@@ -1,3 +1,43 @@
+const axios = require("axios");
+
+/**
+ * Send email using Brevo transactional email API
+ */
+async function sendEmailViaBrevoApi({ to, subject, html, from }) {
+  try {
+    const apiKey = process.env.BREVO_API_KEY;
+    const sender = from
+      ? { name: from.name || "MealSection", email: from.email }
+      : { name: "MealSection", email: process.env.BREVO_SMTP_USER };
+    const payload = {
+      sender,
+      to: Array.isArray(to) ? to.map((email) => ({ email })) : [{ email: to }],
+      subject,
+      htmlContent: html,
+    };
+    const response = await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      payload,
+      {
+        headers: {
+          "api-key": apiKey,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    console.log(
+      `✅ Brevo API email sent to ${to}:`,
+      response.data.messageId || response.data
+    );
+    return response.data;
+  } catch (error) {
+    console.error(
+      `❌ Failed to send Brevo API email to ${to}:`,
+      error.response?.data || error.message
+    );
+    return null;
+  }
+}
 const nodemailer = require("nodemailer");
 
 /**
@@ -94,7 +134,7 @@ async function sendVendorNewOrderEmail(vendor, orderDetails) {
 
               <div class="footer">
                 <p>This is an automated email from MealSection. Please do not reply directly to this email.</p>
-                <p>If you have questions, contact support at support@mealsection.com</p>
+                <p>If you have questions, contact support at mealsection@gmail.com</p>
               </div>
             </div>
           </div>
@@ -189,7 +229,7 @@ async function sendCustomerOrderUpdateEmail(user, orderDetails) {
 
               <div class="footer">
                 <p>Thank you for using MealSection!</p>
-                <p>Questions? Contact us at support@mealsection.com</p>
+                <p>Questions? Contact us at mealsection@gmail.com</p>
               </div>
             </div>
           </div>
@@ -269,7 +309,7 @@ async function sendRiderAssignmentEmail(rider, orderDetails) {
               </div>
 
               <div class="footer">
-                <p>Safe travels! Contact support at support@mealsection.com if you need help.</p>
+                <p>Safe travels! Contact support at mealsection@gmail.com if you need help.</p>
               </div>
             </div>
           </div>
@@ -360,7 +400,7 @@ async function sendRidersNewOrderAvailableEmail(riders, orderDetails) {
 
                 <div class="footer">
                   <p>First come, first served! Login to your rider dashboard to accept this delivery.</p>
-                  <p>Questions? Contact support at support@mealsection.com</p>
+                  <p>Questions? Contact support at mealsection@gmail.com</p>
                 </div>
               </div>
             </div>
@@ -486,7 +526,7 @@ async function sendCustomerRiderPickedOrderEmail(
 
                 <div class="footer">
                   <p>Thank you for using MealSection! Your meal will arrive shortly.</p>
-                  <p>Questions? Contact us at support@mealsection.com</p>
+                  <p>Questions? Contact us at mealsection@gmail.com</p>
                 </div>
               </div>
             </div>
@@ -560,7 +600,7 @@ async function sendWelcomeEmail(user) {
               </div>
 
               <div style="text-align: center; color: #666; font-size: 12px; margin-top: 30px;">
-                <p>Need help? Contact us at support@mealsection.com</p>
+                <p>Need help? Contact us at mealsection@gmail.com</p>
               </div>
             </div>
           </div>
@@ -657,7 +697,7 @@ async function sendCustomerOrderRejectedEmail(user, orderDetails) {
 
               <div class="footer">
                 <p>If you have any questions about this refund, please contact us.</p>
-                <p>Email: support@mealsection.com</p>
+                <p>Email: mealsection@gmail.com</p>
               </div>
             </div>
           </div>
@@ -731,6 +771,5 @@ module.exports = {
   sendRidersNewOrderAvailableEmail,
   sendCustomerRiderPickedOrderEmail,
   sendCustomerOrderRejectedEmail,
-  sendEmail, // Keep the existing sendEmail function for admin alerts and notifications
-  sendEmail, // Add the new generic sendEmail function
+  sendEmailViaBrevoApi,
 };
