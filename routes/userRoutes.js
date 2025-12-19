@@ -1,3 +1,7 @@
+// ...existing code...
+// ===================== VERIFY PAYSTACK PAYMENT =====================
+// POST /verify-paystack { reference, userId }
+
 // ===================== ADMIN ADD FUNDS TO USER =====================
 
 // POST /admin/add-funds { userId, amount }
@@ -6,6 +10,7 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const Order = require("../models/Order");
 const router = express.Router();
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
@@ -80,6 +85,28 @@ router.post("/signup", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+});
+router.post("/verify-paystack", async (req, res) => {
+  const { reference, userId } = req.body;
+  if (!reference) {
+    return res.status(400).json({ message: "Payment reference is required" });
+  }
+  const { verifyPaystackPayment } = require("../services/paystackService");
+  try {
+    const paystackRes = await verifyPaystackPayment(reference);
+    if (paystackRes.status !== true || paystackRes.data.status !== "success") {
+      return res
+        .status(400)
+        .json({ message: "Payment not successful", verified: false });
+    }
+    // Optionally check userId matches customer if you store that info
+    res.json({ status: "success", verified: true, paystack: paystackRes });
+  } catch (err) {
+    console.error("❌ Error verifying paystack payment:", err);
+    res
+      .status(500)
+      .json({ message: err.message || "Verification error", verified: false });
   }
 });
 router.post("/admin/add-funds", async (req, res) => {
@@ -380,8 +407,8 @@ router.post("/add-order", auth, async (req, res) => {
     // ✅ Deduct funds
     user.availableBal = Number(user.availableBal) - total;
 
-    // ✅ Build order object
-    const newOrder = {
+    // ✅ Build and save order object
+    const newOrder = new Order({
       userId: user._id,
       subtotal,
       university,
@@ -407,19 +434,11 @@ router.post("/add-order", auth, async (req, res) => {
       })),
       currentStatus: "Pending",
       rider: "Not assigned",
-    };
-
-    // ✅ Save order
-    if (!user.university) {
-      return res.status(400).json({ message: "User university is missing." });
-    }
-
-    if (!Array.isArray(user.orders)) {
-      user.orders = [];
-    }
-    user.orders.push(newOrder);
-    const savedUser = await user.save();
-    const pushedOrder = savedUser.orders[savedUser.orders.length - 1];
+    });
+    await newOrder.save();
+    user.orders.push(newOrder._id);
+    await user.save();
+    const pushedOrder = newOrder;
 
     // ✅ Record payment
     if (!Array.isArray(user.paymentHistory)) {
@@ -431,7 +450,6 @@ router.post("/add-order", auth, async (req, res) => {
       type: "out",
       date: new Date(),
     });
-
     await user.save();
 
     res
@@ -525,16 +543,43 @@ router.post("/add-order", auth, async (req, res) => {
 router.get("/orders", async (req, res) => {
   try {
     // Use .lean() and only select needed fields for speed
-    const users = await User.find({}, "fullName email orders").lean();
-    // Consider adding pagination for very large datasets
-    const allOrders = users.flatMap((u) =>
-      u.orders.map((order) => ({
-        ...order,
-        userName: u.fullName,
-        userEmail: u.email,
-      }))
-    );
-    res.json({ orders: allOrders });
+    // Add pagination support
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
+    // Only select fields needed by the frontend
+    const total = await Order.countDocuments();
+    const orders = await Order.find(
+      {},
+      {
+        subtotal: 1,
+        serviceFee: 1,
+        deliveryFee: 1,
+        university: 1,
+        Address: 1,
+        PhoneNumber: 1,
+        deliveryNote: 1,
+        vendorNote: 1,
+        packs: 1,
+        currentStatus: 1,
+        rider: 1,
+        userId: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        messages: 1,
+      }
+    )
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate({ path: "userId", select: "fullName email" })
+      .lean();
+    const allOrders = orders.map((order) => ({
+      ...order,
+      userName: order.userId?.fullName,
+      userEmail: order.userId?.email,
+    }));
+    res.json({ orders: allOrders, total });
   } catch (err) {
     console.error("Error fetching all orders:", err);
     res.status(500).json({ message: err.message });
@@ -548,56 +593,92 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
 
     console.log("📦 Accept/Reject Request:", { orderId, vendorId, accepted });
 
-    const user = await User.findOne({ "orders._id": orderId });
-    if (!user) return res.status(404).json({ message: "Order not found" });
-
-    const order = user.orders.id(orderId);
+    const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
+    const user = await User.findById(order.userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    // Use order subtotal for vendor payout
-    let vendorTotal = 0;
-    let vendorName = "";
+    // ✅ INPUT VALIDATION
+    if (typeof accepted !== "boolean") {
+      return res.status(400).json({ message: "accepted must be a boolean" });
+    }
+
+    // ✅ CRITICAL SECURITY CHECK: Verify vendor exists BEFORE processing payment
+    const vendor = await Vendor.findById(vendorId);
+    if (!vendor) return res.status(404).json({ message: "Vendor not found" });
+
+    // ✅ Find the specific pack belonging to this vendor
+    const vendorPack = order.packs.find((pack) => {
+      const packVendorId =
+        typeof pack.vendorId === "object" && pack.vendorId.toString
+          ? pack.vendorId.toString()
+          : String(pack.vendorId);
+      const paramVendorId = String(vendorId);
+      return packVendorId === paramVendorId;
+    });
+
+    if (!vendorPack) {
+      return res.status(400).json({
+        message: "Vendor pack not found in this order",
+      });
+    }
+
+    // ✅ IDEMPOTENCY CHECK: If pack already has same decision, don't process again
+    if (vendorPack.accepted === accepted) {
+      console.log(
+        `⚠️  Idempotent request: pack already marked as ${
+          accepted ? "accepted" : "rejected"
+        }`
+      );
+      return res.json({
+        message: `Pack already marked as ${accepted ? "accepted" : "rejected"}`,
+        packs: order.packs,
+      });
+    }
+
     let packsUpdated = 0;
-
-    console.log(
-      "🔍 Checking packs:",
-      order.packs.map((p) => ({
-        vendorId: p.vendorId,
-        vendorName: p.vendorName,
-        accepted: p.accepted,
-      }))
-    );
-
+    let vendorName = "";
+    let vendorItemsTotal = 0;
+    // Find the specific pack for this vendor and calculate its subtotal only
     order.packs.forEach((pack) => {
       const packVendorId =
         typeof pack.vendorId === "object" && pack.vendorId.toString
           ? pack.vendorId.toString()
           : String(pack.vendorId);
-      const paramVendorId =
-        typeof vendorId === "object" && vendorId.toString
-          ? vendorId.toString()
-          : String(vendorId);
-      console.log(
-        `Comparing: pack.vendorId="${packVendorId}" === vendorId="${paramVendorId}"`,
-        packVendorId === paramVendorId
-      );
+      const paramVendorId = String(vendorId);
       if (packVendorId === paramVendorId) {
         pack.accepted = accepted;
         if (!vendorName) vendorName = pack.vendorName;
         packsUpdated++;
+        // Use the order's subtotal property directly for vendorItemsTotal
+        if (typeof order.subtotal === "number") {
+          vendorItemsTotal = order.subtotal;
+        } else {
+          // fallback: if subtotal is missing, default to 0
+          vendorItemsTotal = 0;
+        }
       }
     });
 
-    // Only use order subtotal for vendor payout
-    vendorTotal = Number(order.subtotal) || 0;
-    console.log(`✅ Updated ${packsUpdated} packs, total: ₦${vendorTotal}`);
+    console.log(
+      `✅ Updated ${packsUpdated} packs for vendor ${vendorName}, items total: ₦${vendorItemsTotal}`
+    );
 
-    if (accepted) {
-      // Lookup vendor by vendorId
-      const vendor = await Vendor.findById(vendorId);
-      if (!vendor) return res.status(404).json({ message: "Vendor not found" });
-
-      vendor.availableBal = (vendor.availableBal || 0) + vendorTotal;
+    // ✅ PAYMENT LOGIC: Only process if vendor ACCEPTS (not on rejection)
+    if (accepted === true) {
+      // ...existing code for accepting...
+      const oldBalance = vendor.availableBal || 0;
+      vendor.availableBal = oldBalance + vendorItemsTotal;
+      if (!vendor.paymentHistory) vendor.paymentHistory = [];
+      vendor.paymentHistory.push({
+        orderId: String(orderId),
+        amount: vendorItemsTotal,
+        type: "in",
+        date: new Date(),
+        description: `Order acceptance - ${vendorPack.name || "items"}`,
+        previousBalance: oldBalance,
+        newBalance: vendor.availableBal,
+      });
       await vendor.save();
     } else {
       // ✅ Refund user when order is rejected
@@ -605,50 +686,45 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
       const allPacksRejected = order.packs.every(
         (pack) => pack.accepted === false
       );
-
       if (allPacksRejected) {
-        // Refund full amount: subtotal + serviceFee + deliveryFee
         const refundAmount =
           Number(order.subtotal || 0) +
           Number(order.serviceFee || 0) +
           Number(order.deliveryFee || 0);
-
         user.availableBal = Number(user.availableBal || 0) + refundAmount;
-
-        // Record refund in payment history
         if (user && Array.isArray(user.paymentHistory)) {
           user.paymentHistory.push({
             orderId: String(order._id),
             price: refundAmount,
             type: "in",
             date: new Date(),
+            description: "Order rejection refund - all packs declined",
           });
         }
-
-        // ✅ Update order status to Cancelled
+        await user.save();
         order.currentStatus = "Cancelled";
-
         console.log(
           `💰 Refunded ₦${refundAmount} to user ${user.fullName} (all packs rejected)`
         );
-
-        // ✅ Send email to customer about order rejection and refund
-        try {
-          const {
-            sendCustomerOrderRejectedEmail,
-          } = require("../services/emailService");
-          await sendCustomerOrderRejectedEmail(user, {
-            orderId: orderId,
-            refundAmount: refundAmount,
-            vendorName: vendorName,
-          });
-        } catch (emailErr) {
-          console.error("Error sending rejection email:", emailErr);
-        }
+        // ✅ Send email to customer about order rejection and refund asynchronously
+        setImmediate(async () => {
+          try {
+            const {
+              sendCustomerOrderRejectedEmail,
+            } = require("../services/emailService");
+            await sendCustomerOrderRejectedEmail(user, {
+              orderId: orderId,
+              refundAmount: refundAmount,
+              vendorName: vendorName,
+            });
+          } catch (emailErr) {
+            console.error("Error sending rejection email:", emailErr);
+          }
+        });
       }
     }
 
-    await user.save();
+    await order.save();
 
     res.json({
       message: `All packs for vendor '${
@@ -683,7 +759,7 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
           orderId: orderId,
           vendorName: vendorName,
           address: order.Address,
-          total: vendorTotal,
+          total: vendorItemsTotal,
         });
       } else {
         // Notify all riders that order was rejected
@@ -748,20 +824,10 @@ router.put("/orders/:id/assign-rider", async (req, res) => {
     const { rider } = req.body; // rider name or ID
     const orderId = req.params.id;
 
-    // Find the user who owns this order
-    const user = await User.findOne({ "orders._id": orderId });
-    if (!user) return res.status(404).json({ message: "Order not found" });
-
-    // Find the specific order
-    const order = user.orders.id(orderId);
+    const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
-
-    // Update rider field
     order.rider = rider;
-
-    await user.save();
-
-    // Respond immediately after DB update
+    await order.save();
     res.json({ message: "Rider assigned successfully", order });
 
     // Run notifications asynchronously
@@ -799,18 +865,10 @@ router.put("/orders/:id/updateStatus", async (req, res) => {
     const { currentStatus } = req.body;
     const orderId = req.params.id;
 
-    const user = await User.findOne({ "orders._id": orderId });
-    if (!user) return res.status(404).json({ message: "Order not found" });
-
-    const order = user.orders.id(orderId);
+    const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
-
-    // Update order status
     order.currentStatus = currentStatus;
-
-    await user.save();
-
-    // Respond immediately after DB update
+    await order.save();
     res.json({ message: "Status updated successfully", order });
     try {
       getIO().emit("orders:status", { orderId, currentStatus });
@@ -894,26 +952,15 @@ router.post("/orders/:id/message", async (req, res) => {
       return res.status(400).json({ message: "Message cannot be empty" });
     }
 
-    // Find the user who owns this order
-    const user = await User.findOne({ "orders._id": orderId });
-    if (!user) return res.status(404).json({ message: "Order not found" });
-
-    // Find the order within user's orders
-    const order = user.orders.id(orderId);
+    const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
-
-    // Ensure messages array exists
     if (!order.messages) order.messages = [];
-
-    // Add new message
     order.messages.push({
       text: message,
       fromAdmin: true,
       createdAt: new Date(),
     });
-
-    await user.save();
-
+    await order.save();
     res.status(200).json({
       message: "Message sent successfully",
       order,
@@ -932,12 +979,8 @@ router.get("/orders/:id/messages", async (req, res) => {
   try {
     const orderId = req.params.id;
 
-    const user = await User.findOne({ "orders._id": orderId }).lean();
-    if (!user) return res.status(404).json({ message: "Order not found" });
-
-    const order = user.orders.find((o) => o._id.toString() === orderId);
+    const order = await Order.findById(orderId).lean();
     if (!order) return res.status(404).json({ message: "Order not found" });
-
     res.json({ messages: order.messages || [] });
   } catch (err) {
     console.error("Error fetching messages:", err);
@@ -980,19 +1023,9 @@ router.post("/forgot-password", async (req, res) => {
     // Construct reset link
     const resetLink = `${process.env.API}/reset-password/${resetToken}`;
 
-    // Nodemailer transporter
-    const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_APP_PASSWORD, // use App Password
-      },
-    });
-
-    const mailOptions = {
-      from: `"MealSection" <${process.env.EMAIL_USER}>`,
+    // Use emailService to send the reset email via Brevo SMTP
+    const { sendEmail } = require("../services/emailService");
+    await sendEmail({
       to: user.email,
       subject: "Reset Your MealSection Password",
       html: `
@@ -1016,9 +1049,7 @@ router.post("/forgot-password", async (req, res) => {
           </div>
         </div>
       `,
-    };
-
-    await transporter.sendMail(mailOptions);
+    });
 
     res.json({ message: "Password reset link sent to your email" });
   } catch (err) {
@@ -1092,22 +1123,5 @@ router.get("/user/:id", async (req, res) => {
 });
 // ===================== ADD BALANCE TO USER =====================
 // POST /add-balance { userId, amount }
-router.post("/add-balance", async (req, res) => {
-  const { userId, amount } = req.body;
-  if (!userId || typeof amount !== "number") {
-    return res.status(400).json({ message: "userId and amount are required" });
-  }
-  try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-    user.availableBal = (user.availableBal || 0) + amount;
-    await user.save();
-    res.json({ success: true, user });
-  } catch (err) {
-    console.error("❌ Error adding balance:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
+// Removed duplicate /add-balance route. Only robust version remains above.
 module.exports = router;

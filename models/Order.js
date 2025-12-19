@@ -1,4 +1,3 @@
-// models/User.js (or wherever your schema is)
 const mongoose = require("mongoose");
 
 const orderSchema = new mongoose.Schema(
@@ -36,46 +35,6 @@ const orderSchema = new mongoose.Schema(
         ],
       },
     ],
-
-    deliveryNote: { type: String },
-    vendorNote: { type: String },
-    // 💬 NEW FIELD
-    messages: [
-      {
-        text: { type: String, required: true },
-        fromAdmin: { type: Boolean, default: true },
-        createdAt: { type: Date, default: Date.now },
-      },
-    ],
-  },
-  { timestamps: true }
-);
-
-const paymentHistorySchema = new mongoose.Schema({
-  orderId: { type: String },
-  date: { type: Date, default: Date.now },
-  price: { type: Number, required: true },
-  type: { type: String, enum: ["in", "out"], required: true }, // "in" or "out"
-  paystackAmount: { type: Number },
-  paystackCharge: { type: Number },
-  description: { type: String },
-});
-
-const userSchema = new mongoose.Schema(
-  {
-    fullName: { type: String, required: true },
-    university: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
-    role: {
-      type: String,
-      enum: ["customer", "admin", "rider", "vendor"],
-      default: "customer",
-    },
-    availableBal: { type: Number, default: 0 },
-    orders: [{ type: mongoose.Schema.Types.ObjectId, ref: "Order" }],
-    paymentHistory: [paymentHistorySchema],
-    // 💬 NEW FIELDS
     deliveryNote: { type: String },
     vendorNote: { type: String },
     messages: [
@@ -89,4 +48,4 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-module.exports = mongoose.model("User", userSchema);
+module.exports = mongoose.model("Order", orderSchema);

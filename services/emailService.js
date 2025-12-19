@@ -12,10 +12,12 @@ function getTransporter() {
 
   // Use Gmail with App Password (recommended) or other SMTP service
   transporter = nodemailer.createTransport({
-    service: "gmail",
+    host: process.env.BREVO_SMTP_HOST,
+    port: parseInt(process.env.BREVO_SMTP_PORT, 10),
+    secure: false, // Brevo uses TLS on port 587
     auth: {
-      user: process.env.EMAIL_USER, // Your Gmail address
-      pass: process.env.EMAIL_APP_PASSWORD, // Gmail App Password (not regular password)
+      user: process.env.BREVO_SMTP_USER,
+      pass: process.env.BREVO_SMTP_PASS,
     },
   });
 
@@ -679,6 +681,48 @@ async function sendCustomerOrderRejectedEmail(user, orderDetails) {
   }
 }
 
+/**
+ * Generic sendEmail function for admin alerts and notifications
+ */
+async function sendEmail({ to, subject, text, html }) {
+  /**
+   * Generic email sender for custom emails (e.g., forgot password)
+   */
+  async function sendEmail({ to, subject, html, from }) {
+    try {
+      const transporter = getTransporter();
+      const mailOptions = {
+        from: from || `"MealSection" <${process.env.BREVO_SMTP_USER}>`,
+        to,
+        subject,
+        html,
+      };
+      const info = await transporter.sendMail(mailOptions);
+      console.log(`✅ Email sent to ${to}:`, info.messageId);
+      return info;
+    } catch (error) {
+      console.error(`❌ Failed to send email to ${to}:`, error.message);
+      return null;
+    }
+  }
+  try {
+    const transporter = getTransporter();
+    const mailOptions = {
+      from: `"MealSection" <${process.env.EMAIL_USER}>`,
+      to,
+      subject,
+      text,
+      html,
+    };
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`✅ Generic email sent to ${to}:`, info.messageId);
+    return info;
+  } catch (error) {
+    console.error(`❌ Failed to send generic email to ${to}:`, error.message);
+    return null;
+  }
+}
+
 module.exports = {
   sendVendorNewOrderEmail,
   sendCustomerOrderUpdateEmail,
@@ -687,4 +731,6 @@ module.exports = {
   sendRidersNewOrderAvailableEmail,
   sendCustomerRiderPickedOrderEmail,
   sendCustomerOrderRejectedEmail,
+  sendEmail, // Keep the existing sendEmail function for admin alerts and notifications
+  sendEmail, // Add the new generic sendEmail function
 };

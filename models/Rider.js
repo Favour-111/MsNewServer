@@ -13,6 +13,7 @@ const riderSchema = new mongoose.Schema(
     },
     availableBal: { type: Number, default: 0 },
     fcmToken: { type: String }, // For push notifications
+    valid: { type: Boolean, default: null }, // null: not reviewed, false: rejected, true: approved
   },
   { timestamps: true }
 );

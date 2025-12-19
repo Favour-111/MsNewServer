@@ -58,6 +58,7 @@ router.post("/signup", async (req, res) => {
       email,
       password: hashedPassword,
       image: uploaded.secure_url,
+      valid: null, // must be approved by manager
     });
 
     await newVendor.save();
@@ -68,6 +69,21 @@ router.post("/signup", async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
+  }
+});
+// PATCH /vendors/:id/approve
+router.patch("/:id/approve", async (req, res) => {
+  try {
+    const { valid } = req.body;
+    const vendor = await Vendor.findByIdAndUpdate(
+      req.params.id,
+      { valid },
+      { new: true }
+    );
+    if (!vendor) return res.status(404).json({ message: "Vendor not found" });
+    res.json({ message: "Vendor approval updated", vendor });
+  } catch (e) {
+    res.status(500).json({ message: "Error updating vendor approval" });
   }
 });
 // ✅ LOGIN route
@@ -84,6 +100,16 @@ router.post("/login", async (req, res) => {
     const vendor = await Vendor.findOne({ email });
     if (!vendor) {
       return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    // Check approval status
+    if (vendor.valid !== true) {
+      return res.status(403).json({
+        message:
+          vendor.valid === false
+            ? "Your account was not approved. Contact support."
+            : "Waiting for manager approval. You cannot login yet.",
+      });
     }
 
     // Compare passwords
@@ -123,7 +149,45 @@ router.post("/login", async (req, res) => {
 });
 
 // =============== FORGOT PASSWORD FOR VENDOR ===============
+// Save or update vendor bank account info
+router.post("/:id/bank-info", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { bankAccountNumber, bankAccountName, bankName } = req.body;
+    if (!bankAccountNumber || !bankAccountName || !bankName) {
+      return res
+        .status(400)
+        .json({ message: "All bank info fields are required" });
+    }
+    const vendor = await Vendor.findByIdAndUpdate(
+      id,
+      { bankAccountNumber, bankAccountName, bankName },
+      { new: true }
+    );
+    if (!vendor) return res.status(404).json({ message: "Vendor not found" });
+    res.json({ message: "Bank info saved", vendor });
+  } catch (err) {
+    console.error("Save bank info error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
 
+// Fetch vendor bank account info
+router.get("/:id/bank-info", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const vendor = await Vendor.findById(id);
+    if (!vendor) return res.status(404).json({ message: "Vendor not found" });
+    // Always return valid fields, even if not set
+    const bankAccountNumber = vendor.bankAccountNumber || "";
+    const bankAccountName = vendor.bankAccountName || "";
+    const bankName = vendor.bankName || "";
+    res.json({ bankAccountNumber, bankAccountName, bankName });
+  } catch (err) {
+    console.error("Fetch bank info error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
 // POST /vendors/forgot-password
 router.post("/forgot-password", async (req, res) => {
   const { email } = req.body;
@@ -147,19 +211,9 @@ router.post("/forgot-password", async (req, res) => {
     // Construct reset link
     const resetLink = `${process.env.API}/vendor/reset-password/${resetToken}`;
 
-    // Nodemailer transporter
-    const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_APP_PASSWORD, // use App Password
-      },
-    });
-
-    const mailOptions = {
-      from: `"MealSection" <${process.env.EMAIL_USER}>`,
+    // Use emailService to send the reset email via Brevo SMTP
+    const { sendEmail } = require("../services/emailService");
+    await sendEmail({
       to: vendor.email,
       subject: "Reset Your Vendor Password",
       html: `
@@ -183,9 +237,7 @@ router.post("/forgot-password", async (req, res) => {
           </div>
         </div>
       `,
-    };
-
-    await transporter.sendMail(mailOptions);
+    });
 
     res.json({ message: "Password reset link sent to your email" });
   } catch (err) {

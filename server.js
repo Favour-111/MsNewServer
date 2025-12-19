@@ -32,6 +32,7 @@ app.use("/api/managers", managerRoutes);
 app.use("/api/promotions", promotionRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/pack-prices", require("./routes/packPriceRoutes"));
+app.use(require("./routes/paystackWebhook"));
 
 // Create HTTP server and initialize Socket.IO
 const server = http.createServer(app);

@@ -30,6 +30,7 @@ router.post("/signup", async (req, res) => {
       email,
       phoneNumber,
       password: hashedPassword,
+      valid: null, // must be approved by manager
     });
 
     await newRider.save();
@@ -42,7 +43,21 @@ router.post("/signup", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-
+// PATCH /riders/:id/approve
+router.patch("/:id/approve", async (req, res) => {
+  try {
+    const { valid } = req.body;
+    const rider = await Rider.findByIdAndUpdate(
+      req.params.id,
+      { valid },
+      { new: true }
+    );
+    if (!rider) return res.status(404).json({ message: "Rider not found" });
+    res.json({ message: "Rider approval updated", rider });
+  } catch (e) {
+    res.status(500).json({ message: "Error updating rider approval" });
+  }
+});
 // ✅ LOGIN route
 router.delete("/delete-rider/:id", async (req, res) => {
   try {
@@ -63,7 +78,17 @@ router.post("/login", async (req, res) => {
     return res.status(400).json({ message: "Email and password required" });
 
   const rider = await Rider.findOne({ email });
-  if (!rider) return res.status(404).json({ message: "Vendor not found" });
+  if (!rider) return res.status(404).json({ message: "Rider not found" });
+
+  // Check approval status
+  if (rider.valid !== true) {
+    return res.status(403).json({
+      message:
+        rider.valid === false
+          ? "Your account was not approved. Contact support."
+          : "Waiting for manager approval. You cannot login yet.",
+    });
+  }
 
   const isMatch = await bcrypt.compare(password, rider.password);
   if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
