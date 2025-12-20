@@ -88,7 +88,7 @@ router.post("/signup", async (req, res) => {
   }
 });
 router.post("/verify-paystack", async (req, res) => {
-  const { reference, userId } = req.body;
+  const { reference } = req.body;
   if (!reference) {
     return res.status(400).json({ message: "Payment reference is required" });
   }
@@ -100,7 +100,7 @@ router.post("/verify-paystack", async (req, res) => {
         .status(400)
         .json({ message: "Payment not successful", verified: false });
     }
-    // Optionally check userId matches customer if you store that info
+    // Only verify, do not credit wallet here. Wallet will be credited by webhook.
     res.json({ status: "success", verified: true, paystack: paystackRes });
   } catch (err) {
     console.error("❌ Error verifying paystack payment:", err);
@@ -260,6 +260,8 @@ router.delete("/delete-user/:id", async (req, res) => {
   }
 });
 // POST /add-balance { userId, amount }
+// POST /add-balance { userId, amount, reference }
+// This endpoint now ONLY verifies payment, does NOT credit wallet. Wallet is credited by webhook.
 router.post("/add-balance", async (req, res) => {
   const { userId, amount, reference } = req.body;
   if (!userId || typeof amount !== "number" || amount <= 0 || !reference) {
@@ -293,41 +295,15 @@ router.post("/add-balance", async (req, res) => {
         .status(400)
         .json({ message: "Payment verification failed or amount mismatch" });
     }
-    // Only credit net amount (excluding Paystack charge)
-    const charge = typeof req.body.charge === "number" ? req.body.charge : 0;
-    const netAmount = amount - charge;
-    const user = await User.findByIdAndUpdate(
-      userId,
-      {
-        $inc: { availableBal: netAmount },
-        $push: {
-          paymentHistory: {
-            price: netAmount,
-            type: "in",
-            orderId: reference,
-            date: new Date(),
-            paystackAmount: amount,
-            paystackCharge: charge,
-          },
-        },
-      },
-      { new: true }
-    );
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-    res.json({ success: true, user });
-    setImmediate(() => {
-      try {
-        getIO().emit("users:balanceUpdated", {
-          userId: user._id,
-          availableBal: user.availableBal,
-        });
-      } catch {}
+    // Do NOT credit wallet here. Only return verification status.
+    return res.json({
+      success: true,
+      verified: true,
+      message: "Payment verified. Wallet will be credited by webhook.",
     });
   } catch (err) {
     // Always log error for debugging
-    console.error("❌ Error verifying payment or adding balance:", err);
+    console.error("❌ Error verifying payment:", err);
     // If error is reference not found, return a generic message
     if ((err.message || "").toLowerCase().includes("reference not found")) {
       return res.status(400).json({

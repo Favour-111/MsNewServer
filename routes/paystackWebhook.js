@@ -40,7 +40,20 @@ router.post("/webhook/paystack", async (req, res) => {
     const event = req.body;
     if (event.event === "charge.success") {
       const reference = event.data.reference;
-      const amount = event.data.amount / 100; // Paystack sends kobo
+      // Always credit only the original intended amount (excluding Paystack charge)
+      // Frontend should send the intended amount in metadata.amount
+      let amount = event.data.metadata && event.data.metadata.amount
+        ? Number(event.data.metadata.amount)
+        : null;
+      // If not present, try to infer from charged amount minus charge (if possible)
+      if (!amount) {
+        // Try to estimate charge (not 100% accurate if Paystack fee changes)
+        let charged = event.data.amount / 100;
+        let estCharge = Math.round(charged * 0.015 + (charged >= 2500 ? 100 : 0));
+        amount = charged - estCharge;
+        // Fallback: if negative or zero, just use charged (should not happen)
+        if (amount <= 0) amount = charged;
+      }
       const email = event.data.customer.email;
 
       // Prevent double-crediting
@@ -53,7 +66,7 @@ router.post("/webhook/paystack", async (req, res) => {
       const user = await User.findOne({ email });
       if (!user) return res.status(404).send("User not found");
 
-      // Credit wallet
+      // Credit wallet with only the original deposit amount (not the total paid)
       user.availableBal = (user.availableBal || 0) + amount;
       user.paymentHistory = user.paymentHistory || [];
       user.paymentHistory.push({
