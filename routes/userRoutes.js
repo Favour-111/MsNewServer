@@ -66,7 +66,7 @@ router.post("/signup", async (req, res) => {
     const token = jwt.sign(
       { userId: newUser._id, role: newUser.role },
       process.env.JWT_SECRET, // make sure you have JWT_SECRET in .env
-      { expiresIn: "7d" }
+      { expiresIn: "365d" }
     );
 
     res.status(201).json({
@@ -214,7 +214,7 @@ router.post("/login", async (req, res) => {
     const token = jwt.sign(
       { userId: user._id, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: "7d" }
+      { expiresIn: "365d" }
     );
 
     // Send safe user data (omit password)
@@ -1076,7 +1076,7 @@ router.post("/reset-password/:token", async (req, res) => {
     const jwtToken = jwt.sign(
       { userId: user._id, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: "7d" }
+      { expiresIn: "365d" }
     );
 
     res.json({ message: "Password reset successfully", token: jwtToken });
