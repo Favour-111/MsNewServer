@@ -256,4 +256,80 @@ router.patch("/withdraw/rider/:id", async (req, res) => {
   }
 });
 
+/**
+ * @route   POST /api/riders/:id/add-funds
+ * @desc    Add funds to rider's available balance
+ * @access  Private/Admin
+ */
+router.post("/:id/add-funds", async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const riderId = req.params.id;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: "Valid amount is required" });
+    }
+
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    rider.availableBal += parseFloat(amount);
+    await rider.save();
+
+    res.status(200).json({
+      message: "Funds added successfully",
+      rider: {
+        id: rider._id,
+        userName: rider.userName,
+        availableBal: rider.availableBal,
+      },
+    });
+  } catch (err) {
+    console.error("Add funds error:", err);
+    res.status(500).json({ message: err.message || "Server error" });
+  }
+});
+
+/**
+ * @route   POST /api/riders/:id/remove-funds
+ * @desc    Remove funds from rider's available balance
+ * @access  Private/Admin
+ */
+router.post("/:id/remove-funds", async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const riderId = req.params.id;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: "Valid amount is required" });
+    }
+
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    if (rider.availableBal < amount) {
+      return res.status(400).json({ message: "Insufficient balance" });
+    }
+
+    rider.availableBal -= parseFloat(amount);
+    await rider.save();
+
+    res.status(200).json({
+      message: "Funds removed successfully",
+      rider: {
+        id: rider._id,
+        userName: rider.userName,
+        availableBal: rider.availableBal,
+      },
+    });
+  } catch (err) {
+    console.error("Remove funds error:", err);
+    res.status(500).json({ message: err.message || "Server error" });
+  }
+});
+
 module.exports = router;

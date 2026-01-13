@@ -651,4 +651,80 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
+/**
+ * @route   POST /api/vendors/:id/add-funds
+ * @desc    Add funds to vendor's available balance
+ * @access  Private/Admin
+ */
+router.post("/:id/add-funds", async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const vendorId = req.params.id;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: "Valid amount is required" });
+    }
+
+    const vendor = await Vendor.findById(vendorId);
+    if (!vendor) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    vendor.availableBal += parseFloat(amount);
+    await vendor.save();
+
+    res.status(200).json({
+      message: "Funds added successfully",
+      vendor: {
+        id: vendor._id,
+        storeName: vendor.storeName,
+        availableBal: vendor.availableBal,
+      },
+    });
+  } catch (err) {
+    console.error("Add funds error:", err);
+    res.status(500).json({ message: err.message || "Server error" });
+  }
+});
+
+/**
+ * @route   POST /api/vendors/:id/remove-funds
+ * @desc    Remove funds from vendor's available balance
+ * @access  Private/Admin
+ */
+router.post("/:id/remove-funds", async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const vendorId = req.params.id;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: "Valid amount is required" });
+    }
+
+    const vendor = await Vendor.findById(vendorId);
+    if (!vendor) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    if (vendor.availableBal < amount) {
+      return res.status(400).json({ message: "Insufficient balance" });
+    }
+
+    vendor.availableBal -= parseFloat(amount);
+    await vendor.save();
+
+    res.status(200).json({
+      message: "Funds removed successfully",
+      vendor: {
+        id: vendor._id,
+        storeName: vendor.storeName,
+        availableBal: vendor.availableBal,
+      },
+    });
+  } catch (err) {
+    console.error("Remove funds error:", err);
+    res.status(500).json({ message: err.message || "Server error" });
+  }
+});
+
 module.exports = router;
