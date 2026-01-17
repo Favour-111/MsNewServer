@@ -66,7 +66,7 @@ router.post("/signup", async (req, res) => {
     const token = jwt.sign(
       { userId: newUser._id, role: newUser.role },
       process.env.JWT_SECRET, // make sure you have JWT_SECRET in .env
-      { expiresIn: "365d" }
+      { expiresIn: "365d" },
     );
 
     res.status(201).json({
@@ -130,7 +130,7 @@ router.post("/admin/add-funds", async (req, res) => {
           },
         },
       },
-      { new: true }
+      { new: true },
     );
     if (!user) {
       return res.status(404).json({ message: "User not found" });
@@ -172,7 +172,7 @@ router.post("/admin/remove-funds", async (req, res) => {
           },
         },
       },
-      { new: true }
+      { new: true },
     );
     if (!user) {
       return res.status(404).json({ message: "User not found" });
@@ -214,7 +214,7 @@ router.post("/login", async (req, res) => {
     const token = jwt.sign(
       { userId: user._id, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: "365d" }
+      { expiresIn: "365d" },
     );
 
     // Send safe user data (omit password)
@@ -361,7 +361,7 @@ router.post("/add-order", auth, async (req, res) => {
         p.items.some(
           (it) =>
             it.category &&
-            ["protein", "carbohydrate"].includes(it.category.toLowerCase())
+            ["protein", "carbohydrate"].includes(it.category.toLowerCase()),
         );
       if (
         requiresPackType &&
@@ -472,7 +472,7 @@ router.post("/add-order", auth, async (req, res) => {
           vendorData.itemCount += pack.items.length;
           vendorData.totalAmount += pack.items.reduce(
             (sum, item) => sum + Number(item.price) * Number(item.quantity),
-            0
+            0,
           );
         }
       }
@@ -543,11 +543,51 @@ router.get("/orders", async (req, res) => {
         createdAt: 1,
         updatedAt: 1,
         messages: 1,
-      }
+      },
     )
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
+      .populate({ path: "userId", select: "fullName email" })
+      .lean();
+    const allOrders = orders.map((order) => ({
+      ...order,
+      userName: order.userId?.fullName,
+      userEmail: order.userId?.email,
+    }));
+    res.json({ orders: allOrders, total });
+  } catch (err) {
+    console.error("Error fetching all orders:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ===================== GET ALL ORDERS FOR ADMIN (NO PAGINATION) =====================
+// GET /api/users/orders/admin/all
+router.get("/orders/admin/all", async (req, res) => {
+  try {
+    const total = await Order.countDocuments();
+    const orders = await Order.find(
+      {},
+      {
+        subtotal: 1,
+        serviceFee: 1,
+        deliveryFee: 1,
+        university: 1,
+        Address: 1,
+        PhoneNumber: 1,
+        deliveryNote: 1,
+        vendorNote: 1,
+        packs: 1,
+        currentStatus: 1,
+        rider: 1,
+        userId: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        messages: 1,
+      },
+    )
+      .sort({ createdAt: -1 })
       .populate({ path: "userId", select: "fullName email" })
       .lean();
     const allOrders = orders.map((order) => ({
@@ -604,7 +644,7 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
       console.log(
         `⚠️  Idempotent request: pack already marked as ${
           accepted ? "accepted" : "rejected"
-        }`
+        }`,
       );
       return res.json({
         message: `Pack already marked as ${accepted ? "accepted" : "rejected"}`,
@@ -637,7 +677,7 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
     });
 
     console.log(
-      `✅ Updated ${packsUpdated} packs for vendor ${vendorName}, items total: ₦${vendorItemsTotal}`
+      `✅ Updated ${packsUpdated} packs for vendor ${vendorName}, items total: ₦${vendorItemsTotal}`,
     );
 
     // ✅ PAYMENT LOGIC: Only process if vendor ACCEPTS (not on rejection)
@@ -660,7 +700,7 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
       // ✅ Refund user when order is rejected
       // Check if ALL packs have been rejected (none accepted)
       const allPacksRejected = order.packs.every(
-        (pack) => pack.accepted === false
+        (pack) => pack.accepted === false,
       );
       if (allPacksRejected) {
         const refundAmount =
@@ -680,7 +720,7 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
         await user.save();
         order.currentStatus = "Cancelled";
         console.log(
-          `💰 Refunded ₦${refundAmount} to user ${user.fullName} (all packs rejected)`
+          `💰 Refunded ₦${refundAmount} to user ${user.fullName} (all packs rejected)`,
         );
         // ✅ Send email to customer about order rejection and refund asynchronously
         setImmediate(async () => {
@@ -759,7 +799,7 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
       if (accepted) {
         // Check if all packs are accepted (order is fully ready)
         const allPacksAccepted = order.packs.every(
-          (pack) => pack.accepted === true
+          (pack) => pack.accepted === true,
         );
 
         if (allPacksAccepted) {
@@ -889,7 +929,7 @@ router.put("/orders/:id/updateStatus", async (req, res) => {
                 orderId: orderId,
                 address: order.Address,
               },
-              rider.userName || "Your Rider"
+              rider.userName || "Your Rider",
             );
           }
         } catch (notifErr) {
@@ -1076,7 +1116,7 @@ router.post("/reset-password/:token", async (req, res) => {
     const jwtToken = jwt.sign(
       { userId: user._id, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: "365d" }
+      { expiresIn: "365d" },
     );
 
     res.json({ message: "Password reset successfully", token: jwtToken });
