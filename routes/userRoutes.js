@@ -15,7 +15,13 @@ const router = express.Router();
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const auth = require("../middleware/authMiddleware");
-const { getIO } = require("../socket");
+const {
+  getIO,
+  notifyVendor,
+  notifyManager,
+  notifyRiders,
+  broadcastToAll,
+} = require("../socket");
 const Rider = require("../models/Rider");
 const Vendor = require("../models/Vendor");
 // // Middleware for authentication
@@ -603,34 +609,26 @@ router.get("/orders/admin/all", async (req, res) => {
 });
 
 router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
+  let session = null;
   try {
     const { accepted } = req.body;
     const { orderId, vendorId } = req.params;
 
     console.log("📦 Accept/Reject Request:", { orderId, vendorId, accepted });
 
-    const order = await Order.findById(orderId);
-    if (!order) return res.status(404).json({ message: "Order not found" });
-    const user = await User.findById(order.userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
-
     // ✅ INPUT VALIDATION
     if (typeof accepted !== "boolean") {
       return res.status(400).json({ message: "accepted must be a boolean" });
     }
 
-    // ✅ CRITICAL SECURITY CHECK: Verify vendor exists BEFORE processing payment
-    const vendor = await Vendor.findById(vendorId);
-    if (!vendor) return res.status(404).json({ message: "Vendor not found" });
+    // ⚠️ CRITICAL IDEMPOTENCY CHECK - Check current state FIRST
+    const existingOrder = await Order.findById(orderId);
+    if (!existingOrder)
+      return res.status(404).json({ message: "Order not found" });
 
-    // ✅ Find the specific pack belonging to this vendor
-    const vendorPack = order.packs.find((pack) => {
-      const packVendorId =
-        typeof pack.vendorId === "object" && pack.vendorId.toString
-          ? pack.vendorId.toString()
-          : String(pack.vendorId);
-      const paramVendorId = String(vendorId);
-      return packVendorId === paramVendorId;
+    const vendorPack = existingOrder.packs.find((pack) => {
+      const packVendorId = String(pack.vendorId || "");
+      return packVendorId === String(vendorId);
     });
 
     if (!vendorPack) {
@@ -639,30 +637,72 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
       });
     }
 
-    // ✅ IDEMPOTENCY CHECK: If pack already has same decision, don't process again
+    // 🚫 PREVENT DUPLICATE PROCESSING: If already processed with same decision, return early
     if (vendorPack.accepted === accepted) {
       console.log(
-        `⚠️  Idempotent request: pack already marked as ${
+        `⚠️  Duplicate request blocked: pack already marked as ${
           accepted ? "accepted" : "rejected"
         }`,
       );
-      return res.json({
+      return res.status(200).json({
         message: `Pack already marked as ${accepted ? "accepted" : "rejected"}`,
-        packs: order.packs,
+        packs: existingOrder.packs,
+        isDuplicate: true,
+      });
+    }
+
+    // ✅ Start transaction using MongoDB session
+    session = await require("mongoose").startSession();
+    session.startTransaction();
+
+    const order = await Order.findById(orderId).session(session);
+    if (!order) {
+      await session.abortTransaction();
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    const user = await User.findById(order.userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // ✅ CRITICAL SECURITY CHECK: Verify vendor exists BEFORE processing payment
+    const vendor = await Vendor.findById(vendorId).session(session);
+    if (!vendor) {
+      await session.abortTransaction();
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    // ⚠️ RE-CHECK INSIDE TRANSACTION to prevent race conditions
+    const packInTx = order.packs.find((pack) => {
+      return String(pack.vendorId || "") === String(vendorId);
+    });
+
+    if (!packInTx) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        message: "Vendor pack not found in this order",
+      });
+    }
+
+    // 🚫 CRITICAL: Prevent processing if already accepted/rejected differently
+    if (packInTx.accepted !== null && packInTx.accepted !== accepted) {
+      await session.abortTransaction();
+      return res.status(409).json({
+        message: `Conflict: Pack was already marked as ${packInTx.accepted ? "accepted" : "rejected"}`,
+        currentState: packInTx.accepted,
       });
     }
 
     let packsUpdated = 0;
     let vendorName = "";
     let vendorItemsTotal = 0;
+
     // Find the specific pack for this vendor and calculate its subtotal only
     order.packs.forEach((pack) => {
-      const packVendorId =
-        typeof pack.vendorId === "object" && pack.vendorId.toString
-          ? pack.vendorId.toString()
-          : String(pack.vendorId);
-      const paramVendorId = String(vendorId);
-      if (packVendorId === paramVendorId) {
+      const packVendorId = String(pack.vendorId || "");
+      if (packVendorId === String(vendorId)) {
         pack.accepted = accepted;
         if (!vendorName) vendorName = pack.vendorName;
         packsUpdated++;
@@ -682,7 +722,6 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
 
     // ✅ PAYMENT LOGIC: Only process if vendor ACCEPTS (not on rejection)
     if (accepted === true) {
-      // ...existing code for accepting...
       const oldBalance = vendor.availableBal || 0;
       vendor.availableBal = oldBalance + vendorItemsTotal;
       if (!vendor.paymentHistory) vendor.paymentHistory = [];
@@ -691,11 +730,11 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
         amount: vendorItemsTotal,
         type: "in",
         date: new Date(),
-        description: `Order acceptance - ${vendorPack.name || "items"}`,
+        description: `Order acceptance - ${packInTx.name || "items"}`,
         previousBalance: oldBalance,
         newBalance: vendor.availableBal,
       });
-      await vendor.save();
+      await vendor.save({ session });
     } else {
       // ✅ Refund user when order is rejected
       // Check if ALL packs have been rejected (none accepted)
@@ -717,7 +756,7 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
             description: "Order rejection refund - all packs declined",
           });
         }
-        await user.save();
+        await user.save({ session });
         order.currentStatus = "Cancelled";
         console.log(
           `💰 Refunded ₦${refundAmount} to user ${user.fullName} (all packs rejected)`,
@@ -740,7 +779,11 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
       }
     }
 
-    await order.save();
+    await order.save({ session });
+
+    // ✅ COMMIT TRANSACTION - Only after all saves are successful
+    await session.commitTransaction();
+    session.endSession();
 
     res.json({
       message: `All packs for vendor '${
@@ -748,88 +791,126 @@ router.put("/orders/:orderId/vendor/:vendorId/accept", async (req, res) => {
       }' updated and balance added`,
       packs: order.packs,
     });
-    try {
-      getIO().emit("vendors:packsUpdated", {
-        orderId,
-        vendorId,
-        vendorName,
-        accepted,
-        packs: order.packs,
-      });
-      // ✅ Also emit order status change if cancelled
-      if (order.currentStatus === "Cancelled") {
-        getIO().emit("orders:status", { orderId, currentStatus: "Cancelled" });
-      }
-    } catch {}
 
-    // ✅ Send push notifications to all riders
-    try {
-      const {
-        notifyAllRidersOrderAccepted,
-        notifyAllRidersOrderRejected,
-      } = require("../services/notificationService");
-
-      if (accepted) {
-        // Notify all riders that order is ready for pickup
-        await notifyAllRidersOrderAccepted(order.university, {
-          orderId: orderId,
-          vendorName: vendorName,
-          address: order.Address,
-          total: vendorItemsTotal,
+    // ✅ ASYNC OPERATIONS (non-critical) - run AFTER transaction commits
+    setImmediate(() => {
+      try {
+        // 📤 Notify the vendor that accepted/rejected the order
+        notifyVendor(vendorId, "vendors:packsUpdated", {
+          orderId,
+          vendorId,
+          vendorName,
+          accepted,
+          packs: order.packs,
         });
-      } else {
-        // Notify all riders that order was rejected
-        await notifyAllRidersOrderRejected(order.university, {
-          orderId: orderId,
-          vendorName: vendorName,
+
+        // 📤 Notify manager/admin of the order status
+        notifyManager(order.university, "orders:status", {
+          orderId,
+          vendorId,
+          vendorName,
+          accepted,
+          currentStatus: order.currentStatus,
         });
-      }
-    } catch (notifErr) {
-      console.error("Error sending rider notifications:", notifErr);
-      // Don't fail the request if notification fails
-    }
 
-    // ✅ Send email notifications to riders and customer when vendor accepts
-    try {
-      const {
-        sendRidersNewOrderAvailableEmail,
-        sendCustomerOrderUpdateEmail,
-      } = require("../services/emailService");
-
-      if (accepted) {
-        // Check if all packs are accepted (order is fully ready)
-        const allPacksAccepted = order.packs.every(
-          (pack) => pack.accepted === true,
-        );
-
-        if (allPacksAccepted) {
-          // Notify all riders in the same university that order is ready
-          const ridersInUniversity = await Rider.find({
-            university: order.university,
-          });
-          if (ridersInUniversity && ridersInUniversity.length > 0) {
-            await sendRidersNewOrderAvailableEmail(ridersInUniversity, {
-              orderId: orderId,
-              vendorName: vendorName,
-              address: order.Address,
-              university: order.university,
-              deliveryFee: order.deliveryFee || 0,
-            });
-          }
-
-          // Notify customer that all vendors have accepted
-          await sendCustomerOrderUpdateEmail(user, {
-            orderId: orderId,
-            currentStatus: "ready",
-            riderAssigned: false,
+        // ✅ Also emit order status change if cancelled
+        if (order.currentStatus === "Cancelled") {
+          broadcastToAll("orders:status", {
+            orderId,
+            currentStatus: "Cancelled",
           });
         }
+
+        // 📤 Notify riders if order is accepted
+        if (accepted) {
+          notifyRiders(order.university, "orders:ready", {
+            orderId,
+            vendorId,
+            vendorName,
+            address: order.Address,
+            total: vendorItemsTotal,
+          });
+        }
+      } catch (socketErr) {
+        console.error("Error emitting socket events:", socketErr);
       }
-    } catch (emailErr) {
-      console.error("Error sending emails:", emailErr);
-      // Don't fail the request if email fails
-    }
+    });
+
+    // ✅ Send push notifications to all riders
+    setImmediate(async () => {
+      try {
+        const {
+          notifyAllRidersOrderAccepted,
+          notifyAllRidersOrderRejected,
+        } = require("../services/notificationService");
+
+        if (accepted) {
+          // Notify all riders that order is ready for pickup
+          await notifyAllRidersOrderAccepted(order.university, {
+            orderId: orderId,
+            vendorName: vendorName,
+            address: order.Address,
+            total: vendorItemsTotal,
+          });
+        } else {
+          // Notify all riders that order was rejected
+          await notifyAllRidersOrderRejected(order.university, {
+            orderId: orderId,
+            vendorName: vendorName,
+          });
+        }
+      } catch (notifErr) {
+        console.error("Error sending rider notifications:", notifErr);
+      }
+    });
+
+    // ✅ Send email notifications to riders and customer when vendor accepts
+    setImmediate(async () => {
+      try {
+        const {
+          sendRidersNewOrderAvailableEmail,
+          sendCustomerOrderUpdateEmail,
+        } = require("../services/emailService");
+
+        if (accepted) {
+          // Check if all packs are accepted (order is fully ready)
+          const allPacksAccepted = order.packs.every(
+            (pack) => pack.accepted === true,
+          );
+
+          if (allPacksAccepted) {
+            // Notify all riders in the same university that order is ready
+            const ridersInUniversity = await Rider.find({
+              university: order.university,
+            });
+            if (ridersInUniversity && ridersInUniversity.length > 0) {
+              await sendRidersNewOrderAvailableEmail(ridersInUniversity, {
+                orderId: orderId,
+                vendorName: vendorName,
+                address: order.Address,
+                university: order.university,
+                deliveryFee: order.deliveryFee || 0,
+              });
+            }
+
+            // Notify customer that all vendors have accepted
+            await sendCustomerOrderUpdateEmail(user, {
+              orderId: orderId,
+              currentStatus: "ready",
+              riderAssigned: false,
+            });
+          }
+        }
+      } catch (emailErr) {
+        console.error("Error sending emails:", emailErr);
+      }
+    });
   } catch (error) {
+    // ✅ ROLLBACK TRANSACTION on any error
+    if (session) {
+      await session.abortTransaction();
+      session.endSession();
+    }
     console.error("Error updating packs:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
