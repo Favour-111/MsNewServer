@@ -50,7 +50,7 @@ router.patch("/:id/approve", async (req, res) => {
     const rider = await Rider.findByIdAndUpdate(
       req.params.id,
       { valid },
-      { new: true }
+      { new: true },
     );
     if (!rider) return res.status(404).json({ message: "Rider not found" });
     res.json({ message: "Rider approval updated", rider });
@@ -102,7 +102,7 @@ router.post("/login", async (req, res) => {
   const token = jwt.sign(
     { id: rider._id, email: rider.email, role: rider.role },
     process.env.JWT_SECRET,
-    { expiresIn: "7d" }
+    { expiresIn: "7d" },
   );
 
   res.status(200).json({
@@ -135,6 +135,32 @@ router.get("/allRiders", async (req, res) => {
   }
 });
 
+// Update or set bank account details for rider
+router.patch("/:id/account", async (req, res) => {
+  try {
+    const { accountName, accountNumber, bank } = req.body;
+    if (!accountName || !accountNumber || !bank) {
+      return res.status(400).json({
+        message: "accountName, accountNumber and bank are required",
+      });
+    }
+
+    const rider = await Rider.findById(req.params.id);
+    if (!rider) return res.status(404).json({ message: "Rider not found" });
+
+    rider.accountName = accountName;
+    rider.accountNumber = accountNumber;
+    rider.bank = bank;
+
+    await rider.save();
+
+    res.status(200).json({ message: "Bank details saved", rider });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 // Middleware to simulate auth (optional)
 const auth = (req, res, next) => {
   // attach riderId to req.body if needed
@@ -155,17 +181,27 @@ router.post("/withdraw", async (req, res) => {
     if (!riderId || !riderName || !amount)
       return res.status(400).json({ message: "All fields are required" });
 
-    await session.withTransaction(async () => {
-      const rider = await Rider.findById(riderId).session(session);
-      if (!rider) throw new Error("Rider not found");
+    const rider = await Rider.findById(riderId);
+    if (!rider) return res.status(404).json({ message: "Rider not found" });
 
-      if (rider.availableBal < amount) {
+    if (!rider.accountName || !rider.accountNumber || !rider.bank) {
+      return res.status(400).json({
+        message:
+          "Please set your bank account name, number, and bank before requesting withdrawal",
+      });
+    }
+
+    await session.withTransaction(async () => {
+      const riderSession = await Rider.findById(riderId).session(session);
+      if (!riderSession) throw new Error("Rider not found");
+
+      if (riderSession.availableBal < amount) {
         throw new Error("Insufficient balance");
       }
 
       // Temporarily deduct balance
-      rider.availableBal -= amount;
-      await rider.save({ session });
+      riderSession.availableBal -= amount;
+      await riderSession.save({ session });
 
       // Create withdrawal record
       const withdrawal = new RiderWithdrawal({
@@ -221,7 +257,7 @@ router.patch("/withdraw/rider/:id", async (req, res) => {
 
     await session.withTransaction(async () => {
       const withdrawal = await RiderWithdrawal.findById(req.params.id).session(
-        session
+        session,
       );
       if (!withdrawal) throw new Error("Withdrawal not found");
 

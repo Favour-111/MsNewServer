@@ -14,10 +14,13 @@ const riderSchema = new mongoose.Schema(
     availableBal: { type: Number, default: 0 },
     fcmToken: { type: String }, // For push notifications
     valid: { type: Boolean, default: null }, // null: not reviewed, false: rejected, true: approved
+    accountName: { type: String, default: "" },
+    accountNumber: { type: String, default: "" },
+    bank: { type: String, default: "" },
     // Password reset fields
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 module.exports = mongoose.model("riders", riderSchema);
